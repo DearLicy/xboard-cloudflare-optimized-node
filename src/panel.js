@@ -1,5 +1,6 @@
 export async function panelRequest(config, nodeId, endpoint, payload, fetcher = fetch) {
-  const credentials = { machine_id: config.machineId, node_id: nodeId, token: config.panelToken };
+  const credentials = { node_id: nodeId, token: config.panelToken };
+  if (config.machineId) credentials.machine_id = config.machineId;
   const url = new URL(`${config.panelUrl}/api/v2/server/${endpoint}`);
   const options = { headers: { 'user-agent': 'xboard-cloudflare-node/2.0', accept: 'application/json' }, signal: AbortSignal.timeout(12000) };
   if (payload === undefined) {

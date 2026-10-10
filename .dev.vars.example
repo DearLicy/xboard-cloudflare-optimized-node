@@ -2,12 +2,16 @@
 # For production, add runtime values in Settings > Variables and Secrets.
 # Workers Builds variables are build-only, not runtime variables.
 PANEL_URL=https://panel.example.com
-MACHINE_ID=4
+# Default: machine-less global mode. Leave MACHINE_ID empty and set PANEL_TOKEN
+# to XBoard's global server_token from the admin settings.
+MACHINE_ID=
 # PANEL_TOKEN, PATH_TOKEN and ADMIN_TOKEN must be independent Secrets in production.
-PANEL_TOKEN=replace-with-the-dedicated-worker-machine-token
+PANEL_TOKEN=replace-with-xboards-global-server-token
 PATH_TOKEN=replace-with-a-random-64-character-hex-token
 ADMIN_TOKEN=replace-with-a-different-random-64-character-hex-token
-# Replace node_id with a real XBoard node associated with MACHINE_ID.
+# Replace node_id with a real XBoard node whose machine_id is null in global mode.
+# Dedicated compatibility mode: set MACHINE_ID to a dedicated machine ID and
+# replace PANEL_TOKEN with that machine's token.
 # Use examples/region-map.example.json as the production multi-region template.
 REGION_MAP='{"cf-asia-ne.example.com":{"node_id":6,"location_hint":"apac-ne","path":"/cf-vless"}}'
 WS_PATH=/cf-vless

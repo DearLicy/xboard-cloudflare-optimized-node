@@ -5,7 +5,8 @@ import { userMap, panelRequest } from '../src/panel.js';
 const env = { PANEL_URL: 'https://panel.example.com', PANEL_TOKEN: 'secret', MACHINE_ID: '4', PATH_TOKEN: 'test-token-long-enough', REGION_MAP: JSON.stringify({'asia.example.com':{node_id:4,location_hint:'apac'}}) };
 test('configuration is fail closed and rejects unsupported/duplicate routes', () => {
   const config = readConfig(env); assert.equal(config.routes.get('asia.example.com').nodeId,4);
-  for (const patch of [{PATH_TOKEN:''},{MACHINE_ID:''},{PANEL_URL:'http://panel.example.com'},{REGION_MAP:'{}'},{REGION_MAP:JSON.stringify({'africa.example.com':{node_id:4,location_hint:'afr'}})},{REGION_MAP:JSON.stringify({'a.example.com':{node_id:4},'b.example.com':{node_id:4}})}]) assert.throws(()=>readConfig({...env,...patch}));
+  for (const patch of [{PATH_TOKEN:''},{PANEL_URL:'http://panel.example.com'},{REGION_MAP:'{}'},{REGION_MAP:JSON.stringify({'africa.example.com':{node_id:4,location_hint:'afr'}})},{REGION_MAP:JSON.stringify({'a.example.com':{node_id:4},'b.example.com':{node_id:4}})},{REGION_MAP:JSON.stringify({'missing.example.com':{}})}]) assert.throws(()=>readConfig({...env,...patch}));
+  const global = readConfig({...env, MACHINE_ID:''}); assert.equal(global.machineId, undefined);
 });
 test('region shares state and global route shards by incoming edge',()=>{
   assert.equal(routeObjectName({nodeId:4,locationHint:'apac'},{cf:{colo:'HKG'}}),routeObjectName({nodeId:4,locationHint:'apac'},{cf:{colo:'LHR'}}));
@@ -22,4 +23,12 @@ test('report uses machine credentials and raw bytes once with standard UA',async
   const config=readConfig(env);let calls=0;
   await panelRequest(config,4,'report',{traffic:{1:[100,200]}},async(url, options)=>{calls++;assert.equal(url.pathname,'/api/v2/server/report');assert.equal(options.headers['user-agent'],'xboard-cloudflare-node/2.0');assert.deepEqual(JSON.parse(options.body),{traffic:{1:[100,200]},machine_id:4,node_id:4,token:'secret'});return Response.json({data:true});});assert.equal(calls,1);
   await assert.rejects(()=>panelRequest(config,4,'report',{},async()=>new Response('',{status:500})));
+});
+test('report uses global XBoard server token when no machine is configured',async()=>{
+  const config=readConfig({...env, MACHINE_ID:''});
+  await panelRequest(config,4,'report',{traffic:{1:[100,200]}},async(url, options)=>{
+    assert.equal(url.search,'');
+    assert.deepEqual(JSON.parse(options.body),{traffic:{1:[100,200]},node_id:4,token:'secret'});
+    return Response.json({data:true});
+  });
 });

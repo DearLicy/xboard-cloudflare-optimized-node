@@ -7,9 +7,10 @@ export function integer(value, fallback, min = 1, max = 86400) {
   return n;
 }
 export function readConfig(env) {
-  const panel = new URL(env.PANEL_URL);
-  if (panel.protocol !== 'https:' || panel.username || panel.password || panel.search || panel.hash) throw new Error('invalid panel URL');
-  if (!env.PANEL_TOKEN || !/^[A-Za-z0-9._~-]{16,128}$/.test(env.PATH_TOKEN || '')) throw new Error('missing secrets');
+  const panel = env.PANEL_URL ? new URL(env.PANEL_URL) : null;
+  if (!panel || panel.protocol !== 'https:' || panel.username || panel.password || panel.search || panel.hash || !env.PANEL_TOKEN) throw new Error('panel credentials are required');
+  if (panel && (panel.protocol !== 'https:' || panel.username || panel.password || panel.search || panel.hash)) throw new Error('invalid panel URL');
+  if (!/^[A-Za-z0-9._~-]{16,128}$/.test(env.PATH_TOKEN || '')) throw new Error('missing secrets');
   const raw = String(env.REGION_MAP || '');
   if (new TextEncoder().encode(raw).length > 4800) throw new Error('region map too large');
   const map = JSON.parse(raw);
@@ -29,8 +30,7 @@ export function readConfig(env) {
     routes.set(host, { nodeId, locationHint: entry.location_hint, path: `${path.replace(/\/+$/, '')}/${env.PATH_TOKEN}` });
   }
   const ports = String(env.ALLOWED_PORTS || '').split(',').filter(Boolean).map(p => integer(p.trim(), undefined, 1, 65535));
-  const machineId = integer(env.MACHINE_ID, undefined, 1, 2147483647);
-  if (!machineId) throw new Error('missing machine ID');
+  const machineId = env.MACHINE_ID ? integer(env.MACHINE_ID, undefined, 1, 2147483647) : undefined;
   return {
     panelUrl: panel.href.replace(/\/+$/, ''), panelToken: env.PANEL_TOKEN, machineId, routes,
     userSyncSeconds: integer(env.USER_SYNC_SECONDS, 60, 10, 600), reportSeconds: integer(env.REPORT_SECONDS, 60, 10, 600),

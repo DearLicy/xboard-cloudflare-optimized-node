@@ -2,9 +2,10 @@
 /**
  * Run inside an existing XBoard PHP application, as its administrator.
  * Usage: php xboard-worker-plan.php /absolute/path/plan.json [--apply]
- * The default is read-only. --apply creates only the dedicated Worker machine
- * and nodes whose code begins cf-worker-. It never changes another machine.
- * On apply, token_file receives the machine credential with mode 0600.
+ * The default is read-only. The default `machine_mode` is `global`: --apply
+ * creates only machine-less logical nodes whose code begins cf-worker-.
+ * Worker authentication then uses XBoard's global server_token. Set
+ * machine_mode to `dedicated` only if you explicitly want a monitored machine.
  * Never commit plan.json or token_file when they contain deployment secrets.
  */
 declare(strict_types=1);
@@ -35,11 +36,15 @@ try {
     $app = require $root . '/bootstrap/app.php';
     $app->make(Kernel::class)->bootstrap();
 
+    $machineMode = (string) ($plan['machine_mode'] ?? 'global');
+    if (!in_array($machineMode, ['global', 'dedicated'], true)) {
+        throw new SafeWorkerPlanException('machine_mode must be global or dedicated.');
+    }
     $machineName = (string) ($plan['machine_name'] ?? 'Cloudflare Worker');
     if ($machineName === '' || strlen($machineName) > 255) {
         throw new SafeWorkerPlanException('Invalid machine_name.');
     }
-    $machine = ServerMachine::where('name', $machineName)->first();
+    $machine = $machineMode === 'dedicated' ? ServerMachine::where('name', $machineName)->first() : null;
     if ($machine && !$machine->is_active) {
         throw new SafeWorkerPlanException('Worker machine is disabled; enable it explicitly in XBoard first.');
     }
@@ -83,7 +88,8 @@ try {
         }
         $code = 'cf-worker-' . $key;
         $node = Server::where('type', 'vless')->where('code', $code)->first();
-        if ($node && (!$machine || $node->machine_id !== $machine->id || !in_array('Cloudflare Worker', $node->tags ?? [], true))) {
+        $expectedMachineId = $machine?->id;
+        if ($node && ($node->machine_id !== $expectedMachineId || !in_array('Cloudflare Worker', $node->tags ?? [], true))) {
             throw new SafeWorkerPlanException('An existing node code belongs to another deployment.');
         }
         // Refuse the original nodes and unrelated node domains, even on apply.
@@ -123,17 +129,19 @@ try {
     $tokenPath = null;
     $tokenHandle = null;
     if ($apply) {
-        $tokenPath = (string) ($plan['token_file'] ?? '');
-        if ($tokenPath === '' || !str_starts_with($tokenPath, '/') || file_exists($tokenPath) || is_link($tokenPath)) {
-            throw new SafeWorkerPlanException('--apply requires a new absolute token_file path.');
+        if ($machineMode === 'dedicated') {
+            $tokenPath = (string) ($plan['token_file'] ?? '');
+            if ($tokenPath === '' || !str_starts_with($tokenPath, '/') || file_exists($tokenPath) || is_link($tokenPath)) {
+                throw new SafeWorkerPlanException('--apply dedicated mode requires a new absolute token_file path.');
+            }
+            umask(0077);
+            $tokenHandle = fopen($tokenPath, 'x');
+            if (!$tokenHandle || !chmod($tokenPath, 0600)) {
+                throw new SafeWorkerPlanException('Cannot create protected token_file.');
+            }
         }
-        umask(0077);
-        $tokenHandle = fopen($tokenPath, 'x');
-        if (!$tokenHandle || !chmod($tokenPath, 0600)) {
-            throw new SafeWorkerPlanException('Cannot create protected token_file.');
-        }
-        DB::transaction(function () use (&$machine, $machineName, &$prepared) {
-            if (!$machine) {
+        DB::transaction(function () use (&$machine, $machineMode, $machineName, &$prepared) {
+            if (!$machine && $machineMode === 'dedicated') {
                 $machine = ServerMachine::create([
                     'name' => $machineName,
                     'token' => ServerMachine::generateToken(),
@@ -143,7 +151,7 @@ try {
             }
             $nextSort = (int) Server::max('sort') + 1;
             foreach ($prepared as &$entry) {
-                $entry['fields']['machine_id'] = $machine->id;
+                $entry['fields']['machine_id'] = $machine?->id;
                 if ($entry['model']) {
                     $entry['model']->update($entry['fields']);
                 } else {
@@ -152,16 +160,19 @@ try {
                 }
             }
         });
-        $credentials = ['machine_id' => $machine->id, 'token' => $machine->getRawOriginal('token')];
-        $encoded = json_encode($credentials, JSON_THROW_ON_ERROR) . "\n";
-        if (fwrite($tokenHandle, $encoded) !== strlen($encoded)) {
-            throw new SafeWorkerPlanException('Machine was created, but credential export failed; inspect protected token_file.');
+        if ($machineMode === 'dedicated') {
+            $credentials = ['machine_id' => $machine->id, 'token' => $machine->getRawOriginal('token')];
+            $encoded = json_encode($credentials, JSON_THROW_ON_ERROR) . "\n";
+            if (fwrite($tokenHandle, $encoded) !== strlen($encoded)) {
+                throw new SafeWorkerPlanException('Machine was created, but credential export failed; inspect protected token_file.');
+            }
+            fclose($tokenHandle);
         }
-        fclose($tokenHandle);
     }
 
     $result = [
         'mode' => $apply ? 'applied' : 'read-only plan',
+        'machine_mode' => $machineMode,
         'machine_id' => $machine?->id,
         'machine_name' => $machineName,
         'credential_file' => $tokenPath,

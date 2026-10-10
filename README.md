@@ -14,12 +14,12 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
                                       └─ XBoard：用户授权、在线记录、流量上报
 ```
 
-已有独立服务器节点可以继续使用。本项目在 XBoard 中创建单独的 Worker machine 和新节点，不要求迁移已有节点。
+已有独立服务器节点可以继续使用。本项目只在 XBoard 中创建单独的新节点，不要求迁移已有节点；默认节点不绑定 machine。
 
 ## 功能与兼容范围
 
 - 一个 Worker、多个自定义域名、各域名独立的 XBoard `node_id`。
-- 从 XBoard v2 machine API 获取当前有权限、未过期、未封禁、仍有配额的用户；没有静态 UUID 后门。
+- 从 XBoard v2 server API 获取当前有权限、未过期、未封禁、仍有配额的用户；没有静态 UUID 后门。
 - 同时要求正确的域名、WebSocket 路径令牌和用户 UUID；未知域名或路径不能用于代理。
 - 每个地区 Durable Object 共享并发计数、用户连接数和流量统计。
 - 用户限速按同一个对象内的连接合计，上传和下载分别限速；设备限制按同一个对象内活跃来源 IP 计算。
@@ -29,19 +29,18 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
 
 当前支持 **VLESS TCP 命令经 WebSocket 传输**。不支持 VLESS UDP、QUIC、Reality、XTLS Vision、原生 TCP 入站或通用 UDP VPN。客户端 DNS 应使用 TCP、DoH 等可用方式，避免强制经此节点发送 UDP。Cloudflare 限制的目标地址仍无法访问，详细说明见下文。
 
-## 1. 准备独立的 XBoard machine 和节点
+## 1. 准备 XBoard 节点与全局 server_token
 
 需要支持以下 API 的 XBoard 版本：
 
 | API | 用途 |
 | --- | --- |
-| `POST /api/v2/server/machine/nodes` | 验证 machine 并获取所属节点 |
 | `GET /api/v2/server/user` | 获取节点可用用户 |
 | `POST /api/v2/server/report` | 上报流量和在线来源 |
 
-在 XBoard 的 machine 管理中新增一台逻辑 machine，例如 `Cloudflare Workers`。它只是 Worker 调用面板 API 的身份，不对应 VPS，不需要开通服务器，也不要执行面板提供的服务器安装命令。不要复用已有日本、香港或佛罗里达 machine 的 token。
+默认使用 **machine-less 全局模式**：Worker 通过 XBoard 的全局 `server_token` 调用上述节点 API，不需要创建 machine，也不需要在日本、香港、佛罗里达服务器上执行安装命令。请在 XBoard 管理设置中取得当前 `server_token`，作为 Worker 的 `PANEL_TOKEN` Secret。这个 token 不是 XBoard 管理员登录密码，也不要与 `ADMIN_TOKEN` 或用户 UUID 混用。
 
-为每个地区新增一个节点，并关联到这台 Worker machine：
+在 XBoard 中为每个地区新增一个节点，**Machine 留空**（`machine_id` 为 `null`），并填写：
 
 | XBoard 字段 | 填写内容 |
 | --- | --- |
@@ -56,12 +55,12 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
 | WebSocket Path | `/cf-vless/<PATH_TOKEN>`，与 Worker 配置一致 |
 | WebSocket Host | 对应 Worker 域名，或留空使客户端使用该域名 |
 | Flow | 留空 |
-| Machine | 新建的 `Cloudflare Workers` machine |
+| Machine | 留空；默认使用全局 `server_token` |
 | 权限组 | 选择允许使用此节点的套餐权限组 |
 | 流量倍率 | 按计费策略填写，例如 `1` 或 `2` |
 | 启用 / 显示 | 开启 |
 
-XBoard 会自动分配 machine 和节点 ID；不要手动编造或修改 ID。仓库提供的 [`scripts/xboard-worker-plan.php`](scripts/xboard-worker-plan.php) 默认只预览，使用 `--apply` 时会创建独立的逻辑 machine 和九个节点，把 token 写入权限为 `0600` 的文件，并输出生成的节点 ID，供部署脚本写入 `REGION_MAP`。权限组为空时 XBoard 返回空用户列表，节点会拒绝连接。字段示例见 [`examples/xboard-node.example.json`](examples/xboard-node.example.json)。
+XBoard 会自动分配节点 ID；不要手动编造或修改 ID。仓库提供的 [`scripts/xboard-worker-plan.php`](scripts/xboard-worker-plan.php) 默认 `machine_mode` 为 `global`，只预览或创建 machine-less 节点；使用 `--apply` 时不会创建 machine，也不会导出 machine token。计划中的每个节点请显式设置 `"show": true`，否则脚本对新节点默认隐藏。脚本输出的节点 ID 用于写入 `REGION_MAP`。权限组为空时 XBoard 返回空用户列表，节点会拒绝连接。字段示例见 [`examples/xboard-node.example.json`](examples/xboard-node.example.json)。
 
 将脚本和计划文件复制到 XBoard 容器可读取的路径后，在该容器中执行：
 
@@ -70,9 +69,9 @@ XBOARD_ROOT=/www php /tmp/xboard-worker-plan.php /tmp/plan.json
 XBOARD_ROOT=/www php /tmp/xboard-worker-plan.php /tmp/plan.json --apply
 ```
 
-计划文件只需要填写节点名称、域名、大区提示和权限组；`machine_id`、节点 ID、服务端 token 都由 XBoard/脚本生成。不要把 `--apply` 导出的 token 文件提交到 GitHub。
+计划文件只需要填写节点名称、域名、大区提示和权限组；节点 ID 由 XBoard/脚本生成，global 模式下不需要 `machine_id` 或 token 文件。不要把包含 `server_token` 的 `.dev.vars` 提交到 GitHub。
 
-Worker 使用 XBoard 发放给用户的 UUID。订阅仍由 XBoard 生成；不要把面板 machine token、管理员 token 或单个用户 UUID 写进仓库。
+如果确实需要单独监控身份，脚本也支持 `machine_mode: "dedicated"`：这时才创建或复用专用 machine，Worker 的 `MACHINE_ID` 填该 machine ID、`PANEL_TOKEN` 改为 machine token。已有服务器 machine 不应复用。Worker 使用 XBoard 发放给用户的 UUID；订阅仍由 XBoard 生成，不要把任何 token 或用户 UUID 写进仓库。
 
 ## 2. 从 GitHub 导入 Cloudflare Workers
 
@@ -105,8 +104,8 @@ npm run deploy
 | 名称 | 类型 | 内容 |
 | --- | --- | --- |
 | `PANEL_URL` | Variable | XBoard 的 HTTPS 地址，例如 `https://panel.example.com` |
-| `MACHINE_ID` | Variable | 脚本输出的 Worker 逻辑 machine ID；不需要手动创建或猜测 |
-| `PANEL_TOKEN` | **Secret** | 该 Worker machine 的 token |
+| `MACHINE_ID` | Variable，可选 | 仅 dedicated machine 兼容模式需要；global machine-less 模式留空 |
+| `PANEL_TOKEN` | **Secret** | global 模式填写 XBoard 全局 `server_token`；dedicated 模式填写专用 machine token |
 | `REGION_MAP` | Variable 或 Secret | 下节 JSON；域名映射到真实节点 ID 和大区提示 |
 | `PATH_TOKEN` | **Secret** | 16–128 个字符，仅使用字母、数字和 `._~-`；建议使用 32 字节随机数的十六进制值 |
 
@@ -122,7 +121,7 @@ npm run deploy
 openssl rand -hex 32
 ```
 
-不要复用 `PANEL_TOKEN` 作为路径或管理令牌。路径令牌能降低扫描和误用，但合法用户可以从订阅中看到路径；真正的用户授权依赖 UUID 和 XBoard 权限。
+不要复用 `PANEL_TOKEN` 作为路径或管理令牌。路径令牌能降低扫描和误用，但合法用户可以从订阅中看到路径；真正的用户授权依赖 UUID 和 XBoard 权限。global 模式的 `server_token` 权限较高，只放在 Cloudflare Secret 中，并按面板安全策略轮换。
 
 ### 可选限制
 
@@ -263,9 +262,9 @@ Durable Objects 的请求、SQLite 存储和活跃时长会产生用量。转发
 | 现象 | 检查方向 |
 | --- | --- |
 | 域名或 Path 返回 404 | 完整域名是否加入 `REGION_MAP`，Path 是否含正确令牌，域名是否绑定 Worker |
-| HTTP 可用但代理失败 | XBoard machine/node ID、用户权限组、UUID、TLS/WS 参数以及目标 TCP 限制 |
-| XBoard user API 返回 403 | machine token、machine 启用状态、节点是否属于该 machine、面板 WAF 是否拦截 API |
-| 节点没有可用用户 | 权限组、用户封禁/到期/余额，面板是否兼容 v2 machine API |
+| HTTP 可用但代理失败 | XBoard `server_token`/node ID、用户权限组、UUID、TLS/WS 参数以及目标 TCP 限制 |
+| XBoard user API 返回 403 | global 模式检查全局 `server_token`；dedicated 模式再检查 machine token、启用状态和节点归属；同时检查面板 WAF |
+| 节点没有可用用户 | 权限组、用户封禁/到期/余额，面板是否兼容 v2 server API |
 | 订阅仍显示旧参数 | 保存新的节点参数并刷新客户端订阅，确认 Flow 留空、普通 TLS 开启 |
 | 有余额却暂停连接 | 查看 `/admin/status` 是否存在待核对批次或达到未上报流量保护上限 |
 | IP 查询显示其他地区 | 位置提示与出口地理数据库均不保证国家；验证真实 TCP 出口，使用大区显示名称 |
@@ -280,7 +279,7 @@ npm run check
 npx wrangler dev
 ```
 
-填写自己的测试 panel、machine 和 node 信息。`.dev.vars` 已被 Git 忽略；示例中的 token 只作占位，不能用于生产。单元测试覆盖配置、协议处理和授权/上报行为；本地模拟不会证明 Cloudflare 的真实对象位置或 TCP 出口能力。
+填写自己的测试 panel、全局 `server_token` 和 node 信息；`MACHINE_ID` 留空即可测试 machine-less 模式。`.dev.vars` 已被 Git 忽略；示例中的 token 只作占位，不能用于生产。单元测试覆盖配置、协议处理和授权/上报行为；本地模拟不会证明 Cloudflare 的真实对象位置或 TCP 出口能力。
 
 ## 配置文件与参考
 
