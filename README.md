@@ -1,6 +1,6 @@
 # XBoard Cloudflare 优选节点
 
-一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。Worker 在 Cloudflare Durable Objects 内校验 XBoard 用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。无需在日本、香港、佛罗里达或其他服务器安装 V2bX，也无需为 Worker 配置代理源站。
+一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。Worker 在 Cloudflare Durable Objects 内校验 XBoard 用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。无需在日本、香港、佛罗里达或其他服务器安装 V2bX，也无需为 Worker 配置代理源站。仓库地址：[DearLicy/xboard-cloudflare-optimized-node](https://github.com/DearLicy/xboard-cloudflare-optimized-node)。
 
 同一个 Worker 可以绑定多个域名，每个域名对应 XBoard 中一个新增节点。推荐使用大区名称，例如 `东北亚｜Cloudflare优选`、`西欧｜Cloudflare优选`。Cloudflare 提供的是尽力而为的 **大区位置提示**，不能保证某个国家的出口 IP；域名和显示名称也不会把出口变成指定国家。
 
@@ -304,6 +304,8 @@ curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
 ## 平台限制与运行成本
 
 Cloudflare 的 TCP API 禁止连接 Cloudflare IP 段、localhost、私网地址，以及 TCP `25` 端口。很多网站也使用 Cloudflare，因此 **这个纯 Worker 节点不保证访问所有网站**。遇到这些目标不能通过伪造 Host/SNI、域名前置或其他隐藏手段解决。本项目没有加入规避平台限制或封禁的逻辑。
+
+解析到 Cloudflare IP 的站点（包括部分常见测速地址）可能在 `connect()` 阶段失败；本 Worker 也不支持 UDP、QUIC 或 WebRTC。不要用 `/cdn-cgi/trace`、`cp.cloudflare.com/generate_204` 或 Cloudflare 自测速 URL 判断节点出口，改用解析到非 Cloudflare IP 的 HTTPS/TCP 测试目标，例如 `https://www.gstatic.com/generate_204`，并以真实网页访问结果为准。
 
 TCP API 是直接连接目标的原始字节流。目标 HTTPS 由客户端自行握手；Worker 不解密客户端到目标的 TLS。客户端到 Cloudflare 的 WebSocket 则使用入口 HTTPS 证书。
 
