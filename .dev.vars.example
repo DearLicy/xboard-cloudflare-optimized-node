@@ -1,6 +1,7 @@
 # Copy to .dev.vars for local development. Do not commit .dev.vars.
 ORIGIN_HOST=127.0.0.1
 ORIGIN_PORT=39004
+ORIGIN_SCHEME=ws
 WS_PATH=/cf-vless
 # Optional: use a random 32+ character value and put the resulting full path
 # (/cf-vless/<PATH_TOKEN>) into the XBoard node's WebSocket Path.

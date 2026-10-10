@@ -1,7 +1,7 @@
 name = "xboard-cloudflare-node"
 main = "src/index.js"
 compatibility_date = "2026-10-10"
-workers_dev = false
+workers_dev = true
 
 # Configure ORIGIN_HOST, ORIGIN_PORT, WS_PATH, PATH_TOKEN, HEALTH_PATH, and
 # MAX_CONNECTIONS in the Cloudflare dashboard. They are intentionally omitted

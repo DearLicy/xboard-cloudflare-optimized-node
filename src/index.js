@@ -51,10 +51,17 @@ function closeQuietly(socket, code = 1000, reason = "closed") {
 
 function relay(source, destination, onFailure) {
   source.addEventListener("message", (event) => {
-    try {
-      destination.send(event.data);
-    } catch (error) {
-      onFailure(error);
+    const send = (data) => {
+      try {
+        destination.send(data);
+      } catch (error) {
+        onFailure(error);
+      }
+    };
+    if (typeof Blob !== "undefined" && event.data instanceof Blob) {
+      event.data.arrayBuffer().then(send).catch(onFailure);
+    } else {
+      send(event.data);
     }
   });
   source.addEventListener("close", () => closeQuietly(destination));
@@ -63,7 +70,11 @@ function relay(source, destination, onFailure) {
 
 function bridge(clientSocket, originSocket, onClose) {
   clientSocket.accept();
-  originSocket.accept();
+  // `originSocket` is created with `new WebSocket(url)` and is already an
+  // outbound client socket. `accept()` is only valid for WebSocketPair's
+  // server side and must not be called on the upstream socket.
+  clientSocket.binaryType = "arraybuffer";
+  originSocket.binaryType = "arraybuffer";
 
   let finished = false;
   const fail = () => {
@@ -91,13 +102,18 @@ function bridge(clientSocket, originSocket, onClose) {
 
 async function proxyWebSocket(request, env) {
   const url = new URL(request.url);
-  const originHost = String(env.ORIGIN_HOST || "").trim();
+  const rawOriginHost = String(env.ORIGIN_HOST || "").trim();
   const originPort = String(env.ORIGIN_PORT || "39004").trim();
-  if (!originHost || !/^[a-zA-Z0-9.:[\]-]+$/.test(originHost)) {
+  const originScheme = String(env.ORIGIN_SCHEME || "ws").trim().toLowerCase();
+  if (!rawOriginHost || /[\s/?#]/.test(rawOriginHost)) {
     return textResponse("origin is not configured", 500);
   }
-  if (!/^\d{1,5}$/.test(originPort)) {
+  const portNumber = Number.parseInt(originPort, 10);
+  if (!/^\d{1,5}$/.test(originPort) || portNumber < 1 || portNumber > 65535) {
     return textResponse("origin port is not configured", 500);
+  }
+  if (originScheme !== "ws" && originScheme !== "wss") {
+    return textResponse("origin scheme is not configured", 500);
   }
   const limit = maxConnections(env);
   if (limit > 0 && activeConnections >= limit) {
@@ -106,7 +122,10 @@ async function proxyWebSocket(request, env) {
     });
   }
 
-  const upstreamURL = `ws://${originHost}:${originPort}${url.pathname}${url.search}`;
+  const originHost = rawOriginHost.includes(":") && !rawOriginHost.startsWith("[")
+    ? `[${rawOriginHost}]`
+    : rawOriginHost;
+  const upstreamURL = `${originScheme}://${originHost}:${originPort}${url.pathname}${url.search}`;
   let upstreamSocket;
   try {
     upstreamSocket = new WebSocket(upstreamURL);

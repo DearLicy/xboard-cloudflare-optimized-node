@@ -40,6 +40,7 @@ Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudfla
 | --- | --- | --- |
 | `ORIGIN_HOST` | `203.0.113.10` 或源站域名 | 固定的 VLESS+WS 源站地址，只填写主机名或 IP，不带协议和路径 |
 | `ORIGIN_PORT` | `39004` | 源站纯 HTTP WebSocket 端口 |
+| `ORIGIN_SCHEME` | `ws` | 源站协议，支持 `ws` 或 `wss`；Cloudflare 客户端入口仍然使用 HTTPS/WSS |
 
 可选变量：
 
@@ -54,7 +55,7 @@ Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudfla
 
 ## 绑定自定义域名
 
-部署成功后，在 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中绑定，例如 `cloudflare.example.com`。Cloudflare 会自动处理证书和 DNS。不要把 Worker 域名再套一层普通 DNS 代理，也不要在 Worker 中接受用户提交的目标地址。
+`wrangler.toml` 默认保留 `workers.dev` 入口，便于首次部署后验证。生产使用时，在 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中绑定，例如 `cloudflare.example.com`。Cloudflare 会自动处理证书和 DNS。不要把 Worker 域名再套一层普通 DNS 代理，也不要在 Worker 中接受用户提交的目标地址。
 
 部署后可访问 `https://cloudflare.example.com/healthz`，预期返回：
 
