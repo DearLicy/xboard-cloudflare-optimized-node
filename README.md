@@ -1,6 +1,6 @@
 # XBoard Cloudflare 优选节点
 
-一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。Worker 在 Cloudflare Durable Objects 内校验 XBoard 用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。无需在日本、香港、佛罗里达或其他服务器安装 V2bX，也无需为 Worker 配置代理源站。仓库地址：[DearLicy/xboard-cloudflare-optimized-node](https://github.com/DearLicy/xboard-cloudflare-optimized-node)。
+一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。Worker 在 Cloudflare Durable Objects 内校验 XBoard 用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。Worker 独立运行，无需在其他服务器安装 V2bX，也无需配置代理源站。
 
 同一个 Worker 可以绑定多个域名，每个域名对应 XBoard 中一个新增节点。推荐使用大区名称，例如 `东北亚｜Cloudflare优选`、`西欧｜Cloudflare优选`。Cloudflare 提供的是尽力而为的 **大区位置提示**，不能保证某个国家的出口 IP；域名和显示名称也不会把出口变成指定国家。
 
@@ -18,11 +18,11 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
 
 ## 小白快速部署（推荐先只做一个节点）
 
-下面这条路径不需要 SSH 到日本、香港或佛罗里达服务器，也不需要在服务器上安装程序。准备好 **Cloudflare 账号（域名托管在该账号）**、**XBoard 管理员权限** 和本仓库的 GitHub 访问权限后，按顺序完成即可。先做一个节点确认链路正常，再复制配置增加其他大区。
+下面这条路径不需要 SSH 到任何服务器，也不需要在服务器上安装程序。准备好 **Cloudflare 账号（域名托管在该账号）**、**XBoard 管理员权限** 和本仓库的 GitHub 访问权限后，按顺序完成即可。先做一个节点确认链路正常，再复制配置增加其他大区。
 
 ### A. 先准备一个域名和一个 XBoard 节点
 
-1. 在 Cloudflare 中选一个没有被现有服务器使用的子域名，例如 `cf-asia.example.com`。不要复用日本、香港或佛罗里达节点正在使用的域名。
+1. 在 Cloudflare 中选一个没有被现有服务使用的子域名，例如 `cf-asia.example.com`。不要复用已有独立节点正在使用的域名。
 2. 生成一个随机路径令牌。macOS/Linux 可在终端运行 `openssl rand -hex 32`；Windows 可用密码管理器生成至少 32 个字符的随机字符串。这个值稍后作为 `PATH_TOKEN` Secret，**不要发到群组或提交到 GitHub**。
 3. 在 XBoard 新增一个 **VLESS** 节点，Machine 留空（`machine_id = null`），并填写：地址/Host 为上面的域名、端口 `443`、TLS 开启、Network 选 `ws`、SNI 和 WebSocket Host 都填该域名、WebSocket Path 填 `/cf-vless/<刚生成的路径令牌>`、Flow 留空。选择允许使用它的权限组，打开“启用”和“显示”，流量倍率按你的计费策略填写（例如 `1` 或 `2`）。
 4. 保存节点并记下 XBoard 自动生成的 **节点 ID**。节点 ID 不是自定义 ID；通常可以在节点详情、编辑地址或 XBoard API 中看到。后面的 `REGION_MAP` 必须填写这个真实 ID。
@@ -90,7 +90,7 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
 | `GET /api/v2/server/user` | 获取节点可用用户 |
 | `POST /api/v2/server/report` | 上报流量和在线来源 |
 
-默认使用 **machine-less 全局模式**：Worker 通过 XBoard 的全局 `server_token` 调用上述节点 API，不需要创建 machine，也不需要在日本、香港、佛罗里达服务器上执行安装命令。请在 XBoard 管理设置中取得当前 `server_token`，作为 Worker 的 `PANEL_TOKEN` Secret。这个 token 不是 XBoard 管理员登录密码，也不要与 `ADMIN_TOKEN` 或用户 UUID 混用。
+默认使用 **machine-less 全局模式**：Worker 通过 XBoard 的全局 `server_token` 调用上述节点 API，不需要创建 machine，也不需要在其他服务器上执行安装命令。请在 XBoard 管理设置中取得当前 `server_token`，作为 Worker 的 `PANEL_TOKEN` Secret。这个 token 不是 XBoard 管理员登录密码，也不要与 `ADMIN_TOKEN` 或用户 UUID 混用。
 
 在 XBoard 中为每个地区新增一个节点，**Machine 留空**（`machine_id` 为 `null`），并填写：
 
