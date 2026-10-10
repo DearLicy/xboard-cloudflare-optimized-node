@@ -1,20 +1,25 @@
 {
-  "name": "Cloudflare优化节点",
+  "name": "东北亚｜Cloudflare优选",
   "type": "vless",
-  "host": "cloudflare.example.com",
+  "host": "cf-asia-ne.example.com",
   "port": "443",
-  "server_port": 39004,
-  "machine_id": "REPLACE_WITH_XBOARD_MACHINE_ID",
+  "server_port": 443,
+  "machine_id": "REPLACE_WITH_DEDICATED_WORKER_MACHINE_ID",
+  "group_ids": ["REPLACE_WITH_ALLOWED_PLAN_GROUP_ID"],
   "rate": 1,
   "protocol_settings": {
     "tls": 1,
-    "tls_settings": null,
+    "tls_settings": {
+      "server_name": "cf-asia-ne.example.com"
+    },
     "flow": "",
     "encryption": null,
     "network": "ws",
     "network_settings": {
       "path": "/cf-vless/REPLACE_WITH_PATH_TOKEN",
-      "headers": {}
+      "headers": {
+        "Host": "cf-asia-ne.example.com"
+      }
     },
     "reality_settings": null,
     "multiplex": null,

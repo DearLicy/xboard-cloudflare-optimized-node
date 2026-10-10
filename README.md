@@ -1,146 +1,277 @@
-# XBoard Cloudflare 优化节点 Worker
+# XBoard Cloudflare 优选节点
 
-这是一个可从 GitHub 导入 Cloudflare Workers 的 VLESS + WebSocket 中继。**一个 Worker 可以绑定多个自定义域名**：每个域名对应一个地区和一个明确的 V2bX/XBoard 源站，用户只需按地区添加域名和映射条目，不必创建多个 Worker。
+一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。Worker 在 Cloudflare Durable Objects 内校验 XBoard 用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。无需在日本、香港、佛罗里达或其他服务器安装 V2bX，也无需为 Worker 配置代理源站。
 
-Worker 只连接 `ORIGIN_MAP`（或单源站变量）中明确允许的源站，不接受客户端提交的目标地址，因此不会成为开放代理。XBoard/V2bX 仍负责用户 UUID、订阅和流量统计；Worker 不保存用户 UUID，也不替代节点 daemon。
-
-Cloudflare 域名是全球 Anycast **入口**。它不会把出口自动变成某个国家，出口地区取决于映射条目中的真实源站。要提供日本、香港、美国等固定出口，仍需在相应地区准备源站；一个 Worker 不能保证覆盖所有国家。
-
-## 工作方式
+同一个 Worker 可以绑定多个域名，每个域名对应 XBoard 中一个新增节点。推荐使用大区名称，例如 `东北亚｜Cloudflare优选`、`西欧｜Cloudflare优选`。Cloudflare 提供的是尽力而为的 **大区位置提示**，不能保证某个国家的出口 IP；域名和显示名称也不会把出口变成指定国家。
 
 ```text
-VLESS 客户端 (WS + TLS)
-       │ 443
-       ├── japan.example.com ──┐
-       └── hongkong.example.com┤
-                               ▼
-                         一个 Worker
-                         │       │
-                         ▼       ▼
-                      日本源站  香港源站
+VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
+                              ├─ cf-global.example.com → 各入口附近的对象
+                              ├─ cf-asia-ne.example.com → 东北亚提示的对象
+                              ├─ cf-europe.example.com → 西欧提示的对象
+                              └─ ……                    → TCP 目标网站
+                                      │
+                                      └─ XBoard：用户授权、在线记录、流量上报
 ```
 
-每个域名必须在 Worker 的 `ORIGIN_MAP` 中精确列出。未知域名和错误路径返回 404；缺少或格式错误的强制令牌会被当作配置错误拒绝。Worker 不会根据 URL 参数选择任意服务器。
+已有独立服务器节点可以继续使用。本项目在 XBoard 中创建单独的 Worker machine 和新节点，不要求迁移已有节点。
 
-## 从 GitHub 导入并独立部署
+## 功能与兼容范围
 
-此 Worker 是独立项目，不绑定佛罗里达、日本、香港或任何其他现成服务器。部署只发布 Worker 代码；源站和 XBoard 由你自行管理。
+- 一个 Worker、多个自定义域名、各域名独立的 XBoard `node_id`。
+- 从 XBoard v2 machine API 获取当前有权限、未过期、未封禁、仍有配额的用户；没有静态 UUID 后门。
+- 同时要求正确的域名、WebSocket 路径令牌和用户 UUID；未知域名或路径不能用于代理。
+- 每个地区 Durable Object 共享并发计数、用户连接数和流量统计。
+- 用户限速按同一个对象内的连接合计，上传和下载分别限速；设备限制按同一个对象内活跃来源 IP 计算。
+- 上报用户上传/下载原始字节，流量倍率由 XBoard 应用。
+- 持久保存待上报流量；响应不明确的上报批次进入人工核对流程，避免盲目重试造成重复扣费。
+- 接入域名可以接受 IPv4/IPv6 客户端；可用的目标 IPv6 TCP 连接仍取决于 Cloudflare 网络和目标服务。
+
+当前支持 **VLESS TCP 命令经 WebSocket 传输**。不支持 VLESS UDP、QUIC、Reality、XTLS Vision、原生 TCP 入站或通用 UDP VPN。客户端 DNS 应使用 TCP、DoH 等可用方式，避免强制经此节点发送 UDP。Cloudflare 限制的目标地址仍无法访问，详细说明见下文。
+
+## 1. 准备独立的 XBoard machine 和节点
+
+需要支持以下 API 的 XBoard 版本：
+
+| API | 用途 |
+| --- | --- |
+| `POST /api/v2/server/machine/nodes` | 验证 machine 并获取所属节点 |
+| `GET /api/v2/server/user` | 获取节点可用用户 |
+| `POST /api/v2/server/report` | 上报流量和在线来源 |
+
+在 XBoard 的 machine 管理中新增一台逻辑 machine，例如 `Cloudflare Workers`。它只是 Worker 调用面板 API 的身份，不对应 VPS，不需要开通服务器，也不要执行面板提供的服务器安装命令。不要复用已有日本、香港或佛罗里达 machine 的 token。
+
+为每个地区新增一个节点，并关联到这台 Worker machine：
+
+| XBoard 字段 | 填写内容 |
+| --- | --- |
+| 名称 | `东北亚｜Cloudflare优选` 等大区名称 |
+| 协议 | `VLESS` |
+| 地址 / Host | 对应 Worker 域名，例如 `cf-asia-ne.example.com` |
+| 用户连接端口 | `443` |
+| 服务端端口 | `443`；项目不在服务器上监听此端口 |
+| 传输协议 / Network | `WebSocket` / `ws` |
+| TLS | 普通 TLS 开启；不要选择 Reality |
+| SNI | 对应 Worker 域名 |
+| WebSocket Path | `/cf-vless/<PATH_TOKEN>`，与 Worker 配置一致 |
+| WebSocket Host | 对应 Worker 域名，或留空使客户端使用该域名 |
+| Flow | 留空 |
+| Machine | 新建的 `Cloudflare Workers` machine |
+| 权限组 | 选择允许使用此节点的套餐权限组 |
+| 流量倍率 | 按计费策略填写，例如 `1` 或 `2` |
+| 启用 / 显示 | 开启 |
+
+XBoard 会自动分配 machine 和节点 ID；不要手动编造或修改 ID。仓库提供的 [`scripts/xboard-worker-plan.php`](scripts/xboard-worker-plan.php) 默认只预览，使用 `--apply` 时会创建独立的逻辑 machine 和九个节点，把 token 写入权限为 `0600` 的文件，并输出生成的节点 ID，供部署脚本写入 `REGION_MAP`。权限组为空时 XBoard 返回空用户列表，节点会拒绝连接。字段示例见 [`examples/xboard-node.example.json`](examples/xboard-node.example.json)。
+
+将脚本和计划文件复制到 XBoard 容器可读取的路径后，在该容器中执行：
+
+```sh
+XBOARD_ROOT=/www php /tmp/xboard-worker-plan.php /tmp/plan.json
+XBOARD_ROOT=/www php /tmp/xboard-worker-plan.php /tmp/plan.json --apply
+```
+
+计划文件只需要填写节点名称、域名、大区提示和权限组；`machine_id`、节点 ID、服务端 token 都由 XBoard/脚本生成。不要把 `--apply` 导出的 token 文件提交到 GitHub。
+
+Worker 使用 XBoard 发放给用户的 UUID。订阅仍由 XBoard 生成；不要把面板 machine token、管理员 token 或单个用户 UUID 写进仓库。
+
+## 2. 从 GitHub 导入 Cloudflare Workers
 
 1. Fork 或复制本仓库到自己的 GitHub 账号。
-2. Cloudflare Dashboard → **Workers & Pages** → **Create application** → **Import an existing Git repository**，选择该仓库。
-3. 构建设置：Framework preset 选 `None`，Build command 留空，Root directory 设为 `/`。
-4. Deploy command 可填 `npm run deploy`。本地部署也可运行 `npm install` 后执行 `npm run deploy`，或直接执行 `npx wrangler deploy --keep-vars`。
-5. 在 Worker 的 **Settings → Variables and Secrets** 配置运行时变量，然后部署。
+2. 在 Cloudflare Dashboard 打开 **Workers & Pages → Create application → Import a repository**，选择仓库。
+3. 项目目录选择仓库根目录，Build command 留空，Deploy command 填 `npm run deploy`，生产分支选择 `main`。
+4. Worker 名称应与 [`wrangler.jsonc`](wrangler.jsonc) 的 `name` 一致；如果自定义名称，先修改仓库配置。
+5. 选择 **Save and Deploy**。首次部署会根据配置创建 `NODES` Durable Object 绑定及 SQLite 存储，无需手动建立数据库。
+6. 进入 Worker 的 **Settings → Variables and Secrets**，按下一节添加运行时配置，再部署配置变更。
 
-仓库中的 [`wrangler.toml`](wrangler.toml) 已设置 `keep_vars = true`。这样从 GitHub 或 Wrangler 部署时不会清除 Dashboard 中配置的运行时变量；Cloudflare Secret 也不会因普通部署被删除。不要把源站地址、路径令牌、API Token、机器令牌、私钥或用户 UUID 提交到 GitHub。
+首次发布可以没有运行时凭据。此时代理功能拒绝访问，添加完整配置后才会开始接受连接。**Workers Builds 的 Build variables and secrets 只供构建使用，不会自动成为运行时变量。**
 
-Cloudflare Workers Builds 里的 **Build variables and secrets** 只提供给构建步骤，不能作为 Worker 运行时配置。请在 **Settings → Variables and Secrets** 添加运行时变量；`ORIGIN_MAP` 建议选择 **Secret**。也可以用 `npx wrangler secret put ORIGIN_MAP` 上传。
+仓库配置启用了 `keep_vars`，普通 GitHub/Wrangler 部署会保留 Dashboard 中的变量和 Secret。Durable Object 绑定、迁移和定时任务由仓库管理；不要删除已发布的迁移历史或 SQLite namespace，否则会丢失待上报状态。
 
-## 运行时变量
+也可以在安装 Node.js 后本地部署：
 
-多地区部署使用 `ORIGIN_MAP`，设置后它优先于单源站变量。完整模板见 [`examples/origin-map.example.json`](examples/origin-map.example.json)。
+```sh
+npm install
+npm run check
+npx wrangler login
+npm run deploy
+```
 
-| 变量 | 默认值 | 说明 |
+已经通过 API token 或其他方式认证时无需重复登录。
+
+## 3. 配置运行时变量与 Secret
+
+### 必填配置
+
+| 名称 | 类型 | 内容 |
 | --- | --- | --- |
-| `ORIGIN_MAP` | 空 | JSON 对象；键是绑定到同一 Worker 的自定义域名，值是该地区的源站配置。建议设为 Secret。 |
-| `ORIGIN_HOST` | 无 | 单源站兼容模式的源站域名、IPv4 或 IPv6；不要包含协议、端口或路径。 |
-| `ORIGIN_PORT` | `39004` | 单源站模式的源站 WebSocket 端口。 |
-| `ORIGIN_SCHEME` | `ws` | `ws` 或 `wss`。生产环境优先使用 `wss`，以加密 Worker 到源站的链路。 |
-| `WS_PATH` | `/cf-vless` | 单源站模式的基础路径。多地区模式在每个条目的 `path` 中设置。 |
-| `PATH_TOKEN` | 无 | 单源站模式的随机 16–128 字符令牌，允许字母、数字和 `._~-`。 |
-| `REQUIRE_PATH_TOKEN` | `true` | 默认强制令牌。仅本地调试可设为 `false`；生产不要关闭。 |
-| `HEALTH_PATH` | `/healthz` | GET 健康检查路径。健康检查不建立 WebSocket。 |
-| `MAX_CONNECTIONS` | `64` | 单源站模式的保护性并发上限；`0` 表示不限制，不建议生产使用。多地区可在条目中覆盖。 |
+| `PANEL_URL` | Variable | XBoard 的 HTTPS 地址，例如 `https://panel.example.com` |
+| `MACHINE_ID` | Variable | 脚本输出的 Worker 逻辑 machine ID；不需要手动创建或猜测 |
+| `PANEL_TOKEN` | **Secret** | 该 Worker machine 的 token |
+| `REGION_MAP` | Variable 或 Secret | 下节 JSON；域名映射到真实节点 ID 和大区提示 |
+| `PATH_TOKEN` | **Secret** | 16–128 个字符，仅使用字母、数字和 `._~-`；建议使用 32 字节随机数的十六进制值 |
 
-`ORIGIN_MAP` 受 Cloudflare 变量/Secret 大小限制，Worker 会拒绝超过约 4.8 KiB 的内容，最多 32 个条目。将只使用的地区放入映射；达到限制时再按业务拆分 Worker。
+强烈建议同时配置以下管理 Secret。未设置时健康检查和代理仍可工作，但管理接口关闭，无法处理待核对上报批次：
 
-### 多地区映射
+| 名称 | 类型 | 内容 |
+| --- | --- | --- |
+| `ADMIN_TOKEN` | **Secret** | 独立的随机管理令牌，用于查看上报状态和人工核对 |
+
+生成两个独立令牌，例如分别运行：
+
+```sh
+openssl rand -hex 32
+```
+
+不要复用 `PANEL_TOKEN` 作为路径或管理令牌。路径令牌能降低扫描和误用，但合法用户可以从订阅中看到路径；真正的用户授权依赖 UUID 和 XBoard 权限。
+
+### 可选限制
+
+| 名称 | 默认值 | 说明 |
+| --- | --- | --- |
+| `WS_PATH` | `/cf-vless` | 基础 WebSocket 路径，实际路径追加 `/<PATH_TOKEN>` |
+| `USER_SYNC_SECONDS` | `60` | 用户授权列表更新间隔，范围 10–600 秒 |
+| `REPORT_SECONDS` | `60` | 流量上报间隔，范围 10–600 秒 |
+| `MAX_CONNECTIONS` | `128` | 每个地区对象的连接保护上限，范围 1–1000；全球模式按入口 colo 分片 |
+| `MAX_USER_CONNECTIONS` | `16` | 每个用户在同一个对象内的连接保护上限，范围 1–1000 |
+| `MAX_PENDING_BYTES` | `104857600` | 未完成流量上报的累计字节保护上限，范围 1024–1073741824，默认 100 MiB |
+| `ALLOWED_PORTS` | 未设置 | 可选的目标 TCP 端口白名单，例如 `80,443`；未设置时允许合法端口，但始终拒绝 `25` |
+
+`MAX_USER_CONNECTIONS` 是 TCP 连接数上限，不等于设备数；一个浏览器也可能同时建立多条连接。XBoard `device_limit` 使用活跃来源 IP 近似设备数。处于同一 NAT 下的设备可能共用一个 IP，IPv6 地址变化可能增加计数。
+
+这些限制在每个 Durable Object 内生效。全球模式的多个入口对象、不同大区对象以及已有独立服务器节点之间，不提供严格的全局并发、速度或设备配额。XBoard 的流量余额最终汇总所有节点，但同步和队列处理有延迟。
+
+协议层还固定设置了单条 WebSocket 消息 1 MiB、输入队列 2 MiB / 64 条消息、握手及目标连接超时 10 秒、空闲超时 120 秒等保护。长时间没有载荷的连接会关闭，客户端应正常重连；这些保护不是 XBoard 套餐配额。
+
+### REGION_MAP：一个域名对应一个节点
+
+完整九个入口模板见 [`examples/region-map.example.json`](examples/region-map.example.json)。所有域名都绑定到同一个 Worker。
 
 ```json
 {
-  "japan.example.com": {
-    "host": "203.0.113.10",
-    "port": 39004,
-    "scheme": "wss",
-    "path": "/cf-vless",
-    "token": "REPLACE_WITH_A_RANDOM_JAPAN_TOKEN",
-    "max_connections": 64
+  "cf-global.example.com": {
+    "node_id": 4,
+    "path": "/cf-vless"
   },
-  "hongkong.example.com": {
-    "host": "2001:db8::20",
-    "port": 39004,
-    "scheme": "wss",
-    "path": "/cf-vless",
-    "token": "REPLACE_WITH_A_RANDOM_HONGKONG_TOKEN",
-    "max_connections": 64
+  "cf-asia-ne.example.com": {
+    "node_id": 6,
+    "location_hint": "apac-ne",
+    "path": "/cf-vless"
+  },
+  "cf-europe.example.com": {
+    "node_id": 8,
+    "location_hint": "weur",
+    "path": "/cf-vless"
   }
 }
 ```
 
-每个条目支持：
+`REGION_MAP` 最多包含 32 个入口，总长度不超过 4800 字节。域名使用完整小写主机名，不能带协议、端口、通配符或路径；国际化域名先转换成 Punycode。每个域名的 `node_id` 必须唯一，并填写脚本输出的 XBoard 节点 ID；这是部署生成的内部引用，不是用户需要自定义的编号。`path` 是基础路径，只使用 `/`、字母、数字、下划线和连字符，最长 128 字符，不包含令牌；没有设置时使用 `WS_PATH`。`location_hint` 可以省略，表示全球入口附近模式；配置提示时使用以下大区。
 
-- `host`：真实地区源站的域名、IPv4 或 IPv6。IPv6 可填写 `2001:db8::20`，不要填写 URL。
-- `port`：源站 WebSocket 端口。
-- `scheme`：`ws` 或 `wss`；推荐 `wss`。
-- `path`：基础 WebSocket 路径，不要把令牌重复写进此字段。
-- `token`：该地区独立的随机令牌。
-- `max_connections`：该域名在**每个 Worker isolate**中的保护性并发上限。
-- `require_path_token`：可覆盖全局设置，生产环境保持默认 `true`。
+| 提示 | 推荐节点名 | 推荐子域名 |
+| --- | --- | --- |
+| 省略 | `全球｜Cloudflare优选` | `cf-global` |
+| `apac` | `亚太｜Cloudflare优选` | `cf-asia` |
+| `apac-ne` | `东北亚｜Cloudflare优选` | `cf-asia-ne` |
+| `apac-se` | `东南亚｜Cloudflare优选` | `cf-asia-se` |
+| `weur` | `西欧｜Cloudflare优选` | `cf-europe` |
+| `eeur` | `东欧｜Cloudflare优选` | `cf-europe-east` |
+| `enam` | `北美东部｜Cloudflare优选` | `cf-north-america-east` |
+| `wnam` | `北美西部｜Cloudflare优选` | `cf-north-america-west` |
+| `oc` | `大洋洲｜Cloudflare优选` | `cf-oceania` |
 
-实际客户端路径是 `path/token`。例如上面的日本条目应在 XBoard 填 `/cf-vless/REPLACE_WITH_A_RANDOM_JAPAN_TOKEN`。如果基础 `path` 是 `/`，令牌路径就是 `/<token>`；只有将 `require_path_token` 明确设为 `false` 且没有令牌时，根路径才是 `/`。路径不能带查询字符串。
+Cloudflare 的 `locationHint` 只在该对象首次创建时生效，是选择附近数据中心的提示。**即使使用大区名称，也不能保证始终从该大洲或大区出站。** 对象可能被放置在其他支持的地区，出口 IP 的地理数据库也可能有不同结果。更改现有节点的提示不会自动迁移对象；需要重新安排位置时应新建节点 ID，再验证出口。
 
-连接数计数按域名/源站键维护，且只在当前 Worker isolate 有效；Cloudflare 不同边缘实例之间不会共享这个计数。因此它是防止单个实例被占满的保护措施，不是账号级、全球级配额。应同时在源站防火墙、XBoard 和 Cloudflare 侧设置合理限制。
+Cloudflare 文档还列出 `sam`、`afr`、`me`，但目前明确说明这些位置尚不直接创建对象，会使用附近支持的地区，因此本项目没有将它们作为南美、非洲或中东的独立出口宣传。不能据此创建“遍布全球国家”的保证。
 
-## 绑定域名与健康检查
+## 4. 绑定域名
 
-在同一个 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中逐个添加 `japan.example.com`、`hongkong.example.com` 等域名。Cloudflare 会处理证书和 Worker 路由，不要把这些域名手动指向源站 A/AAAA 记录。
+在同一个 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中逐个加入 `REGION_MAP` 使用的域名。Cloudflare 会处理路由、DNS 和证书。使用新的 `cf-*` 域名，避免覆盖已有独立服务器节点的域名。
 
-多地区模式下，默认的 `*.workers.dev` 地址没有映射条目，所以访问它（包括 `/healthz`）会返回 404。这是预期行为，也可以避免把未配置入口暴露给扫描器。健康检查请使用已经加入 `ORIGIN_MAP` 的自定义域名：
+不用把域名指向服务器 A/AAAA 地址，也不用上传服务器证书。Cloudflare zone 默认的 IPv6 compatibility 可为入口提供 IPv6；确认没有在账号中关闭该功能。
+
+仓库默认关闭 `*.workers.dev` 路由。若需使用，先启用 `workers_dev`，再把该完整主机名加入 `REGION_MAP`。绑定一个自定义域名并不会让其他域名或子域名自动匹配。
+
+## 5. 验证与真机测试
+
+先通过已绑定域名检查 HTTP 服务：
 
 ```sh
-curl -i https://japan.example.com/healthz
+curl -i https://cf-asia-ne.example.com/healthz
 ```
 
-预期返回：
+健康响应仅表示 Worker HTTP 处理可用，不证明用户同步、TCP 出口或订阅可以使用。接着在 XBoard 更新订阅，在支持 VLESS WS TLS 的客户端导入新节点并测试：
 
-```json
-{"ok":true,"service":"xboard-cloudflare-node"}
+1. 确认服务器地址、SNI、WebSocket Host 使用同一个新域名，端口为 `443`。
+2. 确认 Path 为 `/cf-vless/<PATH_TOKEN>`，UUID 是当前 XBoard 用户 UUID，Flow 留空。
+3. 使用有权限且有余额的账号，访问不在 Cloudflare 网络上的 TCP 测试网站。
+4. 通过节点访问 IP 查询服务，记录实际出口 IP 和地区；分别测试全球和各大区入口。
+5. 等待上报和面板队列处理，确认用户流量增加；如节点倍率为 `2`，面板扣费应使用两倍原始流量。
+6. 用错误 UUID 或错误路径测试，连接应拒绝。撤销用户权限后，等待授权同步并确认已不能继续使用。
+
+WebSocket 返回 `101` 只证明升级成功。完成 VLESS 用户授权、目标 TCP 连接并收到目标响应，才能证明代理链路可用。出口地区需要通过真实流量实测，不能根据入口 DNS IP 或 `/cdn-cgi/trace` 的入口 colo 判断。
+
+## 授权、配额与流量上报
+
+每个对象定期从 XBoard 更新可用用户列表。新授权、封禁、套餐到期、UUID 重置和余额耗尽，会在用户同步以及面板自身的流量处理完成后生效。该时间窗口内可能继续产生流量，本项目不承诺瞬时撤销或零超额；不要把降低同步间隔当作严格的全局额度控制。
+
+Worker 按用户累计真实 TCP 载荷的上传和下载字节，通过 v2 report API 上报。TLS、WebSocket 和 VLESS 封装开销不计入载荷。**不要在 Worker 中再乘以节点流量倍率**：XBoard 会应用自己的倍率，重复相乘会造成重复计费。
+
+流量批次存放在 Durable Object 的持久存储中。XBoard 当前 report API 没有批次幂等键，也不能查询某个批次是否已扣费。当网络中断或响应不明确时，Worker 无法判断面板是否接受过这一批数据，因此保留该批次并暂停相关对象的新代理流量，等待人工核对。
+
+使用管理接口查看状态，令牌放在 HTTP Header 中：
+
+```sh
+curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  https://cf-asia-ne.example.com/admin/status
 ```
 
-如果你确实需要从 `workers.dev` 检查，必须把该完整主机名作为一个键加入 `ORIGIN_MAP`，并为它配置单独的源站条目；不要假设 `workers.dev` 会自动匹配第一个地区。单源站模式（不设置 `ORIGIN_MAP`）则可直接用 `workers.dev` 地址检查。
+核对面板日志及流量处理记录后，按实际结果提交：
 
-## 在 XBoard/V2bX 接入每个地区
+```sh
+curl -X POST https://cf-asia-ne.example.com/admin/reconcile \
+  -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  -H "Content-Type: application/json" \
+  --data '{"batch_id":"<待核对批次ID>","outcome":"accepted"}'
+```
 
-先在每个地区运行 V2bX/XBoard 的 VLESS + WebSocket 入站，端口和基础路径与对应映射条目一致。推荐：
+- `accepted`：确认面板已接受，不再发送这一批。
+- `not-accepted`：确认面板没有接受，恢复到待发送状态。
 
-- Protocol：`VLESS`
-- Network：`WebSocket`
-- TLS：源站使用 `wss` 时开启源站 TLS；使用 `ws` 时 Worker 到源站是明文，客户端到 Cloudflare 仍可使用 HTTPS/WSS。
-- Path：源站必须接受 `path/token` 的完整路径。
-- Listen port：映射条目的 `port`。
+不要根据一次客户端超时就选择 `not-accepted`，也不要直接删除对象存储或反复发送相同批次。这个流程避免已知的重复扣费风险，但不提供跨 Cloudflare 与 XBoard 的严格 exactly-once 事务。传输与流量记账之间没有跨网络事务，运行时异常也可能影响即时计数，应使用面板和 Cloudflare 日志核对测试结果。
 
-然后在 XBoard 为每个域名单独新建节点：
+管理接口不提供给订阅用户；`ADMIN_TOKEN` 和 `PANEL_TOKEN` 只保存在 Cloudflare Secret 中。全球模式按入口 colo 分片，查看和处理状态时需要针对实际受影响的对象，不能把一个入口的状态当作所有全球对象的汇总。
 
-- 名称：例如 `Cloudflare优化节点-日本`、`Cloudflare优化节点-香港`。
-- Host：该地区的 Worker 自定义域名。
-- Port：`443`。
-- Protocol/Network：`VLESS` / `WebSocket`。
-- TLS：开启，SNI 使用该自定义域名。
-- Path：该条目的 `path/token` 完整值。
-- Machine：选择实际运行该地区节点 daemon 的 XBoard machine。请填写有效的 `machine_id`，不要留空；没有 daemon 时面板可能无法取得 users 数据。
-- 流量倍率：按你的计费策略填写；示例使用 `1`，需要双倍计费时可改为 `2`。
+全球节点的管理请求默认查看当前入口 colo 对应的对象。已知需要处理的 colo 时，可在管理 URL 中添加 `?colo=FRA` 等三位大写代码：
 
-[`examples/xboard-node.example.json`](examples/xboard-node.example.json) 是不含真实地址、令牌和用户 UUID 的字段示例。`machine_id` 使用占位符，部署时替换为实际 machine；Worker 不内置机器凭据或用户 UUID。XBoard 继续为用户生成 UUID，并负责订阅、在线状态和流量统计。
+```sh
+curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
+  'https://cf-global.example.com/admin/status?colo=FRA'
+```
 
-## 正常的安全和平台边界
+核对同一个全球对象时也把 `?colo=FRA` 添加到 `/admin/reconcile` URL。这个选择器只对通过管理令牌验证的全球节点管理请求生效，不允许普通代理客户端自行指定对象位置。地区节点无需该参数。定时任务维护地区对象，全球对象由连接时安排的 alarm 独立维护。
 
-- 使用每个地区独立的随机路径令牌，定期轮换并在 XBoard 与 Worker 同时更新。
-- 只在 `ORIGIN_MAP` 中列出需要的域名和源站，未知 Host/Path 返回匿名 404；错误响应不打印令牌、UUID 或源站地址。
-- 源站只开放所需 WebSocket 端口，并使用防火墙限制来源。生产优先使用 `wss`。
-- Worker 使用标准 WebSocket、精确 Host 映射和平台 API，不伪造 Host/SNI、不做域名前置、不承诺绕过 Cloudflare 的限制或封禁。请遵守 Cloudflare、源站提供商和当地法律的服务条款。
-- 当前 Worker 转发 WebSocket/TCP，不提供任意 UDP 隧道。长连接、CPU、带宽、消息大小和并发仍受 Cloudflare Workers 方案限制；高并发或 UDP 请使用适合的专用产品。
+## 平台限制与运行成本
 
-## 本地检查
+Cloudflare 的 TCP API 禁止连接 Cloudflare IP 段、localhost、私网地址，以及 TCP `25` 端口。很多网站也使用 Cloudflare，因此 **这个纯 Worker 节点不保证访问所有网站**。遇到这些目标不能通过伪造 Host/SNI、域名前置或其他隐藏手段解决。本项目没有加入规避平台限制或封禁的逻辑。
+
+TCP API 是直接连接目标的原始字节流。目标 HTTPS 由客户端自行握手；Worker 不解密客户端到目标的 TLS。客户端到 Cloudflare 的 WebSocket 则使用入口 HTTPS 证书。
+
+Durable Objects 的请求、SQLite 存储和活跃时长会产生用量。转发中的 TCP 与 WebSocket 长连接会保持对象活跃，不能按普通短请求或空闲休眠应用估算成本；免费方案达到限额后相关操作会失败。上线前设置合理保护上限，关注账号用量和实际长连接成本。
+
+## 常见问题
+
+| 现象 | 检查方向 |
+| --- | --- |
+| 域名或 Path 返回 404 | 完整域名是否加入 `REGION_MAP`，Path 是否含正确令牌，域名是否绑定 Worker |
+| HTTP 可用但代理失败 | XBoard machine/node ID、用户权限组、UUID、TLS/WS 参数以及目标 TCP 限制 |
+| XBoard user API 返回 403 | machine token、machine 启用状态、节点是否属于该 machine、面板 WAF 是否拦截 API |
+| 节点没有可用用户 | 权限组、用户封禁/到期/余额，面板是否兼容 v2 machine API |
+| 订阅仍显示旧参数 | 保存新的节点参数并刷新客户端订阅，确认 Flow 留空、普通 TLS 开启 |
+| 有余额却暂停连接 | 查看 `/admin/status` 是否存在待核对批次或达到未上报流量保护上限 |
+| IP 查询显示其他地区 | 位置提示与出口地理数据库均不保证国家；验证真实 TCP 出口，使用大区显示名称 |
+| UDP 或 QUIC 应用不可用 | 本项目只实现 TCP；使用 TCP/DoH，或选择支持 UDP 的独立服务器节点 |
+
+## 本地开发
 
 ```sh
 cp .dev.vars.example .dev.vars
@@ -149,13 +280,15 @@ npm run check
 npx wrangler dev
 ```
 
-本地开发可在 `.dev.vars` 设置 `REQUIRE_PATH_TOKEN=false`，生产环境必须恢复为 `true` 并使用随机令牌。`wrangler dev` 只能验证路由和健康检查；完整链路需要可用的 VLESS + WebSocket 源站。
+填写自己的测试 panel、machine 和 node 信息。`.dev.vars` 已被 Git 忽略；示例中的 token 只作占位，不能用于生产。单元测试覆盖配置、协议处理和授权/上报行为；本地模拟不会证明 Cloudflare 的真实对象位置或 TCP 出口能力。
 
-## 文件
+## 配置文件与参考
 
-- `src/index.js`：Worker 入口和双向 WebSocket 中继。
-- `wrangler.toml`：不含源站凭据的部署配置，已启用 `keep_vars`。
-- `.dev.vars.example`：本地变量模板。
-- `examples/origin-map.example.json`：多地区域名到源站映射模板。
-- `examples/xboard-node.example.json`：XBoard 节点字段示例。
-- `test/worker.test.mjs`：不连接生产源站的检查。
+- [`wrangler.jsonc`](wrangler.jsonc)：Worker、SQLite Durable Object 绑定及定时任务。
+- [`.dev.vars.example`](.dev.vars.example)：本地变量模板。
+- [`examples/region-map.example.json`](examples/region-map.example.json)：九个全球/大区入口模板。
+- [`examples/xboard-node.example.json`](examples/xboard-node.example.json)：新增 XBoard 节点模板。
+- [Cloudflare Durable Objects 位置提示](https://developers.cloudflare.com/durable-objects/reference/data-location/)。
+- [Cloudflare TCP API 及禁止目标](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)。
+- [Cloudflare GitHub 部署配置](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)。
+- [Durable Objects 用量与价格](https://developers.cloudflare.com/durable-objects/platform/pricing/)。

@@ -1,0 +1,46 @@
+{
+  "cf-global.example.com": {
+    "node_id": 4,
+    "path": "/cf-vless"
+  },
+  "cf-asia.example.com": {
+    "node_id": 5,
+    "location_hint": "apac",
+    "path": "/cf-vless"
+  },
+  "cf-asia-ne.example.com": {
+    "node_id": 6,
+    "location_hint": "apac-ne",
+    "path": "/cf-vless"
+  },
+  "cf-asia-se.example.com": {
+    "node_id": 7,
+    "location_hint": "apac-se",
+    "path": "/cf-vless"
+  },
+  "cf-europe.example.com": {
+    "node_id": 8,
+    "location_hint": "weur",
+    "path": "/cf-vless"
+  },
+  "cf-europe-east.example.com": {
+    "node_id": 9,
+    "location_hint": "eeur",
+    "path": "/cf-vless"
+  },
+  "cf-north-america-east.example.com": {
+    "node_id": 10,
+    "location_hint": "enam",
+    "path": "/cf-vless"
+  },
+  "cf-north-america-west.example.com": {
+    "node_id": 11,
+    "location_hint": "wnam",
+    "path": "/cf-vless"
+  },
+  "cf-oceania.example.com": {
+    "node_id": 12,
+    "location_hint": "oc",
+    "path": "/cf-vless"
+  }
+}

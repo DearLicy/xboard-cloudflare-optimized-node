@@ -1,18 +1,20 @@
-# Copy to .dev.vars for local development. Do not commit .dev.vars.
-# For multi-region mode, set ORIGIN_MAP to the JSON from
-# examples/origin-map.example.json. It takes precedence over these single-origin variables.
-# Runtime variables belong in Cloudflare Settings > Variables and Secrets;
-# Workers Builds variables are build-only and are not visible at runtime.
-# Store ORIGIN_MAP as a Secret in production; never commit the populated .dev.vars.
-ORIGIN_MAP=
-ORIGIN_HOST=127.0.0.1
-ORIGIN_PORT=39004
-ORIGIN_SCHEME=ws
+# Copy to .dev.vars for local testing; never commit populated credentials.
+# For production, add runtime values in Settings > Variables and Secrets.
+# Workers Builds variables are build-only, not runtime variables.
+PANEL_URL=https://panel.example.com
+MACHINE_ID=4
+# PANEL_TOKEN, PATH_TOKEN and ADMIN_TOKEN must be independent Secrets in production.
+PANEL_TOKEN=replace-with-the-dedicated-worker-machine-token
+PATH_TOKEN=replace-with-a-random-64-character-hex-token
+ADMIN_TOKEN=replace-with-a-different-random-64-character-hex-token
+# Replace node_id with a real XBoard node associated with MACHINE_ID.
+# Use examples/region-map.example.json as the production multi-region template.
+REGION_MAP='{"cf-asia-ne.example.com":{"node_id":6,"location_hint":"apac-ne","path":"/cf-vless"}}'
 WS_PATH=/cf-vless
-# Required in production. Use a random 32+ character value and put the
-# resulting full path (/cf-vless/<PATH_TOKEN>) into the XBoard node's Path.
-PATH_TOKEN=replace-with-a-random-32-character-token
-# Keep this true in production. Set false only for local development without a token.
-REQUIRE_PATH_TOKEN=true
-HEALTH_PATH=/healthz
-MAX_CONNECTIONS=64
+USER_SYNC_SECONDS=60
+REPORT_SECONDS=60
+MAX_CONNECTIONS=128
+MAX_USER_CONNECTIONS=16
+MAX_PENDING_BYTES=104857600
+# Optional destination TCP port allowlist. Unset allows all legal ports except 25.
+# ALLOWED_PORTS=80,443
