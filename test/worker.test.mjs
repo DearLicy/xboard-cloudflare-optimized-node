@@ -145,6 +145,14 @@ test("rejects invalid map and invalid token configuration", { concurrency: false
     ORIGIN_MAP: JSON.stringify({ "japan.example": { host: "origin.example", token: "short" } }),
   });
   assert.equal(response.status, 500);
+  response = await worker.fetch(request("japan.example", "/vless/token-1234567890", { upgrade: true }), {
+    ORIGIN_MAP: JSON.stringify({ "japan.example": { host: "origin.example", port: "not-a-port", token: "token-1234567890" } }),
+  });
+  assert.equal(response.status, 500);
+  response = await worker.fetch(request("japan.example", "/vless/token-1234567890", { upgrade: true }), {
+    ORIGIN_MAP: JSON.stringify({ "japan.example": { host: "origin.example", scheme: "tcp", token: "token-1234567890" } }),
+  });
+  assert.equal(response.status, 500);
 });
 
 test("preserves single-origin compatibility and does not fall back from a map", { concurrency: false }, async () => {
