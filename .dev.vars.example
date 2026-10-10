@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development. Do not commit .dev.vars.
+ORIGIN_HOST=127.0.0.1
+ORIGIN_PORT=39004
+WS_PATH=/cf-vless
+HEALTH_PATH=/healthz

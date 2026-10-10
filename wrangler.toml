@@ -1,0 +1,7 @@
+name = "xboard-cloudflare-node"
+main = "src/index.js"
+compatibility_date = "2026-10-10"
+workers_dev = false
+
+# Configure these values in the Cloudflare dashboard or with `wrangler secret`/`wrangler deploy`:
+# ORIGIN_HOST, ORIGIN_PORT, WS_PATH, HEALTH_PATH
