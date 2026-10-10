@@ -1,0 +1,24 @@
+{
+  "name": "Cloudflare优化节点",
+  "type": "vless",
+  "host": "cloudflare.example.com",
+  "port": "443",
+  "server_port": 39004,
+  "rate": 1,
+  "protocol_settings": {
+    "tls": 1,
+    "tls_settings": null,
+    "flow": "",
+    "encryption": null,
+    "network": "ws",
+    "network_settings": {
+      "path": "/cf-vless/REPLACE_WITH_PATH_TOKEN",
+      "headers": {}
+    },
+    "reality_settings": null,
+    "multiplex": null,
+    "utls": null
+  },
+  "show": 1,
+  "enabled": 1
+}

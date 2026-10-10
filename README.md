@@ -32,6 +32,8 @@ Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudfla
 
 如果使用 Cloudflare 的 Git 集成，后续推送到仓库即可触发新的部署。也可以在本地安装 Wrangler 后运行 `npm install` 和 `npm run deploy`。
 
+本仓库不绑定任何现成服务器，也不会自动修改 XBoard。每次部署都由你自己填写源站地址、路径令牌和连接上限；因此同一个仓库可以分别部署给不同的 v2bx/XBoard 节点。
+
 ## 必填变量
 
 | 变量 | 示例 | 说明 |
@@ -81,6 +83,8 @@ Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudfla
 - Path：与 `WS_PATH` 相同
 - Machine：选择实际监听 `ORIGIN_PORT` 的机器
 - 流量倍率：按你的计费策略设置，通常为 `1`
+
+`examples/xboard-node.example.json` 提供了一份不含真实地址和密钥的协议字段示例，字段结构接近 v2bx/XBoard 的 VLESS 节点配置。
 
 XBoard 仍然为每个用户生成独立 UUID，Worker 只转发连接，不保存用户凭据，也不参与面板的在线状态和流量统计。流量统计由源站上的 XBoard 节点完成。
 
