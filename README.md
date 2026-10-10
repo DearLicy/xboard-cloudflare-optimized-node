@@ -16,6 +16,22 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
 
 已有独立服务器节点可以继续使用。本项目只在 XBoard 中创建单独的新节点，不要求迁移已有节点；默认节点不绑定 machine。
 
+## 不会部署时：把仓库交给 AI
+
+仓库附带一个可供 AI 使用的部署 Skill：[`skills/xboard-cloudflare-deploy/SKILL.md`](skills/xboard-cloudflare-deploy/SKILL.md)。它会按“小白先做一个节点、验证成功后再扩展”的顺序检查配置、部署 Worker、绑定域名、接入 XBoard 并验证订阅和流量上报。Skill 优先推荐在 **Codex** 中使用；它能在 GitHub 和 Cloudflare 插件/MCP 已连接时检查仓库并执行部署。
+
+将本仓库链接和下面这段话一起发给 Codex（或其他支持读取仓库 Skill 的 AI）：
+
+```text
+请使用 $xboard-cloudflare-deploy（文件位于 skills/xboard-cloudflare-deploy/SKILL.md），按其中的流程帮我部署。
+先检查 GitHub 和 Cloudflare 插件/MCP 是否已连接到正确账号，再检查仓库和配置。
+先做 dry-run 并列出将要创建或修改的资源；任何外部写入前都要向我说明并等待授权。
+我希望先部署一个 machine-less XBoard VLESS 节点，成功后再扩展其他大区。
+请不要修改已有服务器节点，不要把任何密钥写入仓库或聊天记录。
+```
+
+AI 需要能够访问目标 Cloudflare 账号、GitHub 仓库以及（如需自动创建节点）XBoard。缺少任一插件/MCP 或权限时，Skill 会停止外部写入并给出手动操作步骤；这时不要把 `server_token`、API Token、私钥或用户 UUID 粘贴到公开聊天中。无插件的 AI 仍可按照 README 逐步指导，但不能声称已经完成部署。
+
 ## 小白快速部署（推荐先只做一个节点）
 
 下面这条路径不需要 SSH 到任何服务器，也不需要在服务器上安装程序。准备好 **Cloudflare 账号（域名托管在该账号）**、**XBoard 管理员权限** 和一个可用于 Fork/导入仓库的 GitHub 账号后，按顺序完成即可。先做一个节点确认链路正常，再复制配置增加其他大区。
