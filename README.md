@@ -16,6 +16,58 @@ VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
 
 已有独立服务器节点可以继续使用。本项目只在 XBoard 中创建单独的新节点，不要求迁移已有节点；默认节点不绑定 machine。
 
+## 小白快速部署（推荐先只做一个节点）
+
+下面这条路径不需要 SSH 到日本、香港或佛罗里达服务器，也不需要在服务器上安装程序。准备好 **Cloudflare 账号（域名托管在该账号）**、**XBoard 管理员权限** 和本仓库的 GitHub 访问权限后，按顺序完成即可。先做一个节点确认链路正常，再复制配置增加其他大区。
+
+### A. 先准备一个域名和一个 XBoard 节点
+
+1. 在 Cloudflare 中选一个没有被现有服务器使用的子域名，例如 `cf-asia.example.com`。不要复用日本、香港或佛罗里达节点正在使用的域名。
+2. 生成一个随机路径令牌。macOS/Linux 可在终端运行 `openssl rand -hex 32`；Windows 可用密码管理器生成至少 32 个字符的随机字符串。这个值稍后作为 `PATH_TOKEN` Secret，**不要发到群组或提交到 GitHub**。
+3. 在 XBoard 新增一个 **VLESS** 节点，Machine 留空（`machine_id = null`），并填写：地址/Host 为上面的域名、端口 `443`、TLS 开启、Network 选 `ws`、SNI 和 WebSocket Host 都填该域名、WebSocket Path 填 `/cf-vless/<刚生成的路径令牌>`、Flow 留空。选择允许使用它的权限组，打开“启用”和“显示”，流量倍率按你的计费策略填写（例如 `1` 或 `2`）。
+4. 保存节点并记下 XBoard 自动生成的 **节点 ID**。节点 ID 不是自定义 ID；通常可以在节点详情、编辑地址或 XBoard API 中看到。后面的 `REGION_MAP` 必须填写这个真实 ID。
+
+如果暂时没有 XBoard 面板权限，不能跳过这一步：Worker 会向 XBoard 查询用户和上报流量，没有真实节点 ID 就不会放行用户。需要批量创建节点时，再使用下方的 `xboard-worker-plan.php` 脚本。
+
+### B. 在 Cloudflare 从 GitHub 部署 Worker
+
+1. 在 GitHub 打开本仓库，点击 **Fork**（或复制到自己的账号）。
+2. 在 Cloudflare Dashboard 进入 **Workers & Pages → Create application → Import a repository**，授权 GitHub 后选择刚 Fork 的仓库。
+3. 项目目录选择仓库根目录；生产分支选 `main`；**Build command 留空**；**Deploy command 填 `npm run deploy`**；保存并部署。不要把变量填在 GitHub/Workers Builds 的 Build variables 区域，那些变量只在构建时可见。
+4. 首次部署完成后，进入该 Worker 的 **Settings → Variables and Secrets**。按“配置运行时变量”表逐项添加：普通值用 **Variable**，令牌用 **Secret**。变量名必须完全一致，保存后点击 **Deploy** 使新变量生效。
+5. 在同一 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中加入 `cf-asia.example.com`。Cloudflare 会自动创建 DNS 和证书；不要把这个域名解析到某台服务器，也不要上传服务器证书。每增加一个 `REGION_MAP` 域名，都要在这里单独添加一次。
+
+### C. 填入最小可用配置
+
+先只配置一个域名，确认成功后再把示例文件中的其他域名逐个加入。`REGION_MAP` 在 Cloudflare 面板中应填成一行 JSON（不要带代码块标记），把 `123` 换成你刚记下的节点 ID，把域名换成你自己的域名：
+
+```json
+{"cf-asia.example.com":{"node_id":123,"location_hint":"apac","path":"/cf-vless"}}
+```
+
+对应变量如下：
+
+| 名称 | 类型 | 示例 |
+| --- | --- | --- |
+| `PANEL_URL` | Variable | `https://xboard.example.com`（只填面板根地址） |
+| `MACHINE_ID` | Variable | 留空；machine-less 模式不要填写 |
+| `REGION_MAP` | Variable | 上面的单行 JSON |
+| `WS_PATH` | Variable | `/cf-vless` |
+| `PANEL_TOKEN` | Secret | XBoard 全局 `server_token` |
+| `PATH_TOKEN` | Secret | 步骤 A 生成的随机令牌 |
+| `ADMIN_TOKEN` | Secret | 另一个独立随机令牌（建议配置） |
+
+`PANEL_TOKEN` 是 XBoard 的全局 `server_token`，不是管理员登录密码；`PATH_TOKEN` 和 `ADMIN_TOKEN` 也不能复用它。Worker 会把 `WS_PATH` 与 `PATH_TOKEN` 拼成真正的 WebSocket 路径，所以 XBoard 节点和客户端使用 `/cf-vless/<PATH_TOKEN>`，而 `REGION_MAP` 只写 `/cf-vless`。
+
+### D. 验证、刷新订阅，再增加其他大区
+
+1. 浏览器打开 `https://cf-asia.example.com/healthz`，应看到 `{"ok":true,...}`。若是 404，先检查自定义域名和 `REGION_MAP` 主机名是否完全一致。
+2. 在 XBoard 中让测试用户属于该节点权限组且有余额，重新生成/刷新订阅。客户端参数应为：服务器和 SNI 为该域名、端口 `443`、TLS、WebSocket、Path `/cf-vless/<PATH_TOKEN>`、Flow 留空。
+3. 访问普通 HTTPS 网站验证真实 TCP 代理，再在 XBoard 面板确认在线和流量上报。`healthz` 只代表 Worker HTTP 可用，不代表代理已经通过授权。
+4. 确认一个节点后，复制 `examples/region-map.example.json`，把每个域名绑定到 Worker、在 XBoard 各建一个 machine-less 节点，并将各自真实 `node_id` 填入 `REGION_MAP`。节点显示名可以使用“全球｜Cloudflare优选”“亚洲｜Cloudflare优选”等大区名称；大区只是 Cloudflare 的位置提示，不保证出口国家。
+
+如果不想使用 GitHub 导入，也可以按下方“本地部署”命令完成同样的部署；两种方式使用同一个 `wrangler.jsonc`，不要同时维护两套配置。
+
 ## 功能与兼容范围
 
 - 一个 Worker、多个自定义域名、各域名独立的 XBoard `node_id`。
@@ -266,7 +318,7 @@ Durable Objects 的请求、SQLite 存储和活跃时长会产生用量。转发
 | XBoard user API 返回 403 | global 模式检查全局 `server_token`；dedicated 模式再检查 machine token、启用状态和节点归属；同时检查面板 WAF |
 | 节点没有可用用户 | 权限组、用户封禁/到期/余额，面板是否兼容 v2 server API |
 | 订阅仍显示旧参数 | 保存新的节点参数并刷新客户端订阅，确认 Flow 留空、普通 TLS 开启 |
-| Clash 测速 timeout、Shadowrocket 只有延迟 | 先用 DoH 查询域名是否解析到 Cloudflare；某些网络的系统 DNS 会返回错误地址。确认服务器地址、SNI、Host 和 Path 完全来自最新订阅，并让客户端使用可直连的 TCP/DoH DNS，避免把 DNS 请求强制送入仅支持 TCP 的此节点 |
+| Clash 测速 timeout、Shadowrocket 只有延迟 | 先用 DoH 查询域名是否解析到 Cloudflare；某些网络的系统 DNS 会返回错误地址。确认服务器地址、SNI、Host 和 Path 完全来自最新订阅，并让客户端使用可直连的 TCP/DoH DNS，避免把 DNS 请求强制送入仅支持 TCP 的此节点。若 Clash Verge 的默认测速地址是 `https://cp.cloudflare.com/generate_204`，请改为 `https://www.gstatic.com/generate_204`：Cloudflare Worker 不能连接 Cloudflare 自身 IP，前一个地址会造成误报 Timeout；改测速地址后再测，并以真实网页访问为准。 |
 | 有余额却暂停连接 | 查看 `/admin/status` 是否存在待核对批次或达到未上报流量保护上限 |
 | IP 查询显示其他地区 | 位置提示与出口地理数据库均不保证国家；验证真实 TCP 出口，使用大区显示名称 |
 | UDP 或 QUIC 应用不可用 | 本项目只实现 TCP；使用 TCP/DoH，或选择支持 UDP 的独立服务器节点 |
