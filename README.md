@@ -1,20 +1,68 @@
 # XBoard Cloudflare 优选节点
 
-一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。Worker 在 Cloudflare Durable Objects 内校验 XBoard 用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。Worker 独立运行，无需在其他服务器安装 V2bX，也无需配置代理源站。
+一个可从 GitHub 导入部署的 Cloudflare Worker，使用 **VLESS + WebSocket + TLS** 提供独立的 TCP 代理节点。默认入口不创建 Durable Objects 或 SQLite 存储，每条新连接直接向 XBoard 校验用户 UUID，并通过 `cloudflare:sockets` 连接目标网站。Worker 独立运行，无需在其他服务器安装 V2bX，也无需配置代理源站。
 
 同一个 Worker 可以绑定多个域名，每个域名对应 XBoard 中一个新增节点。推荐使用大区名称，例如 `东北亚｜Cloudflare优选`、`西欧｜Cloudflare优选`。Cloudflare 提供的是尽力而为的 **大区位置提示**，不能保证某个国家的出口 IP；域名和显示名称也不会把出口变成指定国家。
 
 ```text
 VLESS 客户端 ── WSS / 443 ── 一个 Cloudflare Worker
-                              ├─ cf-global.example.com → 各入口附近的对象
-                              ├─ cf-asia-ne.example.com → 东北亚提示的对象
-                              ├─ cf-europe.example.com → 西欧提示的对象
+                              ├─ cf-global.example.com → 各入口附近的 Cloudflare colo
+                              ├─ cf-asia-ne.example.com → 东北亚提示的入口
+                              ├─ cf-europe.example.com → 西欧提示的入口
                               └─ ……                    → TCP 目标网站
                                       │
                                       └─ XBoard：用户授权、在线记录、流量上报
 ```
 
 已有独立服务器节点可以继续使用。本项目只在 XBoard 中创建单独的新节点，不要求迁移已有节点；默认节点不绑定 machine。
+
+## 默认无持久化部署
+
+本仓库默认部署的是无 Durable Objects 的 Stateless Worker，配置文件是
+`wrangler.jsonc`，入口是 `src/index.js`。它不会创建 SQLite、migration、alarm
+或其他持久化绑定，适合账号已经达到 Durable Objects 存储/空间限制的情况：
+
+```sh
+npm install
+npm run check
+npm run deploy
+```
+
+Cloudflare Dashboard 从 GitHub 导入时，项目根目录和运行时 Variables/Secrets
+的填写方式与下文相同，Deploy command 填 `npm run deploy`。每次新连接直接向
+XBoard 查询授权用户，连接关闭时把本连接的上传/下载字节通过
+`/api/v2/server/report` 尽力上报一次。`/healthz` 和带 `ADMIN_TOKEN` 的
+`/admin/status` 可检查当前 Worker isolate 的临时状态。
+
+无持久化模式不能提供跨 Worker isolate 的全局连接数、设备数、速度队列或即时撤销；
+运行时重启、连接异常或 XBoard 报告请求失败时，未上报的字节不会进入重试队列。
+XBoard 的 report API 没有批次幂等键，因此 Worker 不会盲目重试可能已经被面板接受
+的请求，避免重复扣费。它适合测试和能接受尽力计费的场景；若需要精确计费和人工
+reconcile，请使用下方保留的 Durable Objects legacy 配置。
+
+`location_hint` 在无持久化模式中仅作为节点说明，实际执行位置由普通 Worker 的入口
+colo 决定，不能承诺大区出口。已有独立服务器节点可以继续使用；本项目只在 XBoard
+中创建单独的新节点，不要求迁移已有节点，默认节点不绑定 machine。
+
+## Durable Objects legacy 模式
+
+仓库仍保留原来的精确统计实现，源文件为 `src/durable-index.js`，配置为
+`wrangler.durable.jsonc`。它会使用已有的 `xboard-cloudflare-node` Worker、
+Durable Object SQLite namespace、定时任务和持久流量账本。只有在确认账号允许这些
+资源、并且需要失败重试与人工 reconcile 时才使用：
+
+```sh
+npm run deploy:durable
+```
+
+不要用 legacy 配置覆盖或删除已经发布的 migration/namespace；删除会丢失待核对账本。
+无持久化默认 Worker 与 legacy Worker 使用不同的名称，便于先绑定新域名和新 XBoard
+节点进行测试。
+
+切换仓库默认入口不会自动删除旧 namespace；旧 namespace 中已有的 SQLite 数据仍可能
+显示在 Durable Objects 用量里。确认 legacy `/admin/status` 没有待核对批次、旧域名
+已经迁移并且不再需要旧 Worker 后，再在 Cloudflare 控制台单独删除旧 Worker/namespace
+以释放旧空间。删除前请先导出或核对账本，避免丢失未结算流量。
 
 ## 不会部署时：把仓库交给 AI
 
@@ -40,7 +88,7 @@ AI 需要能够访问目标 Cloudflare 账号、GitHub 仓库以及（如需自�
 
 1. 在 Cloudflare 中选一个没有被现有服务使用的子域名，例如 `cf-asia.example.com`。不要复用已有独立节点正在使用的域名。
 2. 生成一个随机路径令牌。macOS/Linux 可在终端运行 `openssl rand -hex 32`；Windows 可用密码管理器生成至少 32 个字符的随机字符串。这个值稍后作为 `PATH_TOKEN` Secret，**不要发到群组或提交到 GitHub**。
-3. 在 XBoard 新增一个 **VLESS** 节点，Machine 留空（`machine_id = null`），并填写：地址/Host 为上面的域名、端口 `443`、TLS 开启、Network 选 `ws`、SNI 和 WebSocket Host 都填该域名、WebSocket Path 填 `/cf-vless/<刚生成的路径令牌>`、Flow 留空。选择允许使用它的权限组，打开“启用”和“显示”，流量倍率按你的计费策略填写（例如 `1` 或 `2`）。
+3. 在 XBoard 新增一个 **VLESS** 节点，Machine 留空（`machine_id = null`），并填写：地址/Host 为上面的域名、端口 `443`、TLS 开启、Network 选 `ws`、SNI 和 WebSocket Host 都填该域名、WebSocket Path 填 `/cf-vless/<刚生成的路径令牌>`、Flow 留空。选择允许使用它的权限组，打开“启用”和“显示”，流量倍率按你的计费策略填写（例如 `1` 或 `2`）。无持久化模式会在每条新连接查询 XBoard，但不会跨连接保存设备/并发状态。
 4. 保存节点并记下 XBoard 自动生成的 **节点 ID**。节点 ID 不是自定义 ID；通常可以在节点详情、编辑地址或 XBoard API 中看到。后面的 `REGION_MAP` 必须填写这个真实 ID。
 
 如果暂时没有 XBoard 面板权限，不能跳过这一步：Worker 会向 XBoard 查询用户和上报流量，没有真实节点 ID 就不会放行用户。需要批量创建节点时，再使用下方的 `xboard-worker-plan.php` 脚本。
@@ -89,10 +137,10 @@ AI 需要能够访问目标 Cloudflare 账号、GitHub 仓库以及（如需自�
 - 一个 Worker、多个自定义域名、各域名独立的 XBoard `node_id`。
 - 从 XBoard v2 server API 获取当前有权限、未过期、未封禁、仍有配额的用户；没有静态 UUID 后门。
 - 同时要求正确的域名、WebSocket 路径令牌和用户 UUID；未知域名或路径不能用于代理。
-- 每个地区 Durable Object 共享并发计数、用户连接数和流量统计。
-- 用户限速按同一个对象内的连接合计，上传和下载分别限速；设备限制按同一个对象内活跃来源 IP 计算。
+- 无持久化默认模式每条新连接独立查询 XBoard，并在连接关闭时尽力上报一次流量。
+- 无持久化模式只提供 Worker isolate 内的临时并发保护；不提供跨请求的用户/设备配额或流量账本。
 - 上报用户上传/下载原始字节，流量倍率由 XBoard 应用。
-- 持久保存待上报流量；响应不明确的上报批次进入人工核对流程，避免盲目重试造成重复扣费。
+- Durable Objects legacy 模式才提供持久账本、失败批次 reconcile 和跨请求限制。
 - 接入域名可以接受 IPv4/IPv6 客户端；可用的目标 IPv6 TCP 连接仍取决于 Cloudflare 网络和目标服务。
 
 当前支持 **VLESS TCP 命令经 WebSocket 传输**。不支持 VLESS UDP、QUIC、Reality、XTLS Vision、原生 TCP 入站或通用 UDP VPN。客户端 DNS 应使用 TCP、DoH 等可用方式，避免强制经此节点发送 UDP。Cloudflare 限制的目标地址仍无法访问，详细说明见下文。
@@ -147,12 +195,12 @@ XBOARD_ROOT=/www php /tmp/xboard-worker-plan.php /tmp/plan.json --apply
 2. 在 Cloudflare Dashboard 打开 **Workers & Pages → Create application → Import a repository**，选择仓库。
 3. 项目目录选择仓库根目录，Build command 留空，Deploy command 填 `npm run deploy`，生产分支选择 `main`。
 4. Worker 名称应与 [`wrangler.jsonc`](wrangler.jsonc) 的 `name` 一致；如果自定义名称，先修改仓库配置。
-5. 选择 **Save and Deploy**。首次部署会根据配置创建 `NODES` Durable Object 绑定及 SQLite 存储，无需手动建立数据库。
+5. 选择 **Save and Deploy**。默认配置不会创建 Durable Object、SQLite 或 migration；只会上传一个无持久化 Worker。需要旧版精确统计时，改用 `wrangler.durable.jsonc` 和 `npm run deploy:durable`。
 6. 进入 Worker 的 **Settings → Variables and Secrets**，按下一节添加运行时配置，再部署配置变更。
 
 首次发布可以没有运行时凭据。此时代理功能拒绝访问，添加完整配置后才会开始接受连接。**Workers Builds 的 Build variables and secrets 只供构建使用，不会自动成为运行时变量。**
 
-仓库配置启用了 `keep_vars`，普通 GitHub/Wrangler 部署会保留 Dashboard 中的变量和 Secret。Durable Object 绑定、迁移和定时任务由仓库管理；不要删除已发布的迁移历史或 SQLite namespace，否则会丢失待上报状态。
+仓库配置启用了 `keep_vars`，普通 GitHub/Wrangler 部署会保留 Dashboard 中的变量和 Secret。默认无持久化配置没有绑定、迁移和定时任务；legacy 配置的迁移历史和 SQLite namespace 由 `wrangler.durable.jsonc` 管理，不要删除已发布的 legacy namespace。
 
 也可以在安装 Node.js 后本地部署：
 
@@ -181,7 +229,7 @@ npm run deploy
 
 | 名称 | 类型 | 内容 |
 | --- | --- | --- |
-| `ADMIN_TOKEN` | **Secret** | 独立的随机管理令牌，用于查看上报状态和人工核对 |
+| `ADMIN_TOKEN` | **Secret** | 独立的随机管理令牌，用于查看状态；legacy 模式还用于人工核对 |
 
 生成两个独立令牌，例如分别运行：
 
@@ -196,16 +244,16 @@ openssl rand -hex 32
 | 名称 | 默认值 | 说明 |
 | --- | --- | --- |
 | `WS_PATH` | `/cf-vless` | 基础 WebSocket 路径，实际路径追加 `/<PATH_TOKEN>` |
-| `USER_SYNC_SECONDS` | `60` | 用户授权列表更新间隔，范围 10–600 秒 |
-| `REPORT_SECONDS` | `60` | 流量上报间隔，范围 10–600 秒 |
-| `MAX_CONNECTIONS` | `128` | 每个地区对象的连接保护上限，范围 1–1000；全球模式按入口 colo 分片 |
-| `MAX_USER_CONNECTIONS` | `16` | 每个用户在同一个对象内的连接保护上限，范围 1–1000 |
-| `MAX_PENDING_BYTES` | `104857600` | 未完成流量上报的累计字节保护上限，范围 1024–1073741824，默认 100 MiB |
-| `ALLOWED_PORTS` | 未设置 | 可选的目标 TCP 端口白名单，例如 `80,443`；未设置时允许合法端口，但始终拒绝 `25` |
+| `USER_SYNC_SECONDS` | `60` | legacy 模式的用户同步间隔，范围 10–600 秒；无持久化模式每条新连接查询，忽略此值 |
+| `REPORT_SECONDS` | `60` | legacy 模式的上报间隔，范围 10–600 秒；无持久化模式在连接关闭时上报，忽略此值 |
+| `MAX_CONNECTIONS` | `128` | legacy 模式按对象限制；无持久化模式仅作当前 isolate 的临时保护，范围 1–1000 |
+| `MAX_USER_CONNECTIONS` | `16` | 仅 legacy 模式生效；无持久化模式不提供跨请求用户连接限制 |
+| `MAX_PENDING_BYTES` | `104857600` | 仅 legacy 模式生效；无持久化模式没有待上报持久队列 |
+| `ALLOWED_PORTS` | 未设置 | 两种模式都支持的目标 TCP 端口白名单，例如 `80,443`；未设置时允许合法端口，但始终拒绝 `25` |
 
 `MAX_USER_CONNECTIONS` 是 TCP 连接数上限，不等于设备数；一个浏览器也可能同时建立多条连接。XBoard `device_limit` 使用活跃来源 IP 近似设备数。处于同一 NAT 下的设备可能共用一个 IP，IPv6 地址变化可能增加计数。
 
-这些限制在每个 Durable Object 内生效。全球模式的多个入口对象、不同大区对象以及已有独立服务器节点之间，不提供严格的全局并发、速度或设备配额。XBoard 的流量余额最终汇总所有节点，但同步和队列处理有延迟。
+legacy 模式的这些限制在每个 Durable Object 内生效；无持久化模式只能在当前 isolate 内临时限制连接。多个入口、不同 Worker 实例以及已有独立服务器节点之间，都不提供严格的全局并发、速度或设备配额。XBoard 的流量余额最终汇总所有节点，但同步和队列处理有延迟。
 
 协议层还固定设置了单条 WebSocket 消息 1 MiB、输入队列 2 MiB / 64 条消息、握手及目标连接超时 10 秒、空闲超时 120 秒等保护。长时间没有载荷的连接会关闭，客户端应正常重连；这些保护不是 XBoard 套餐配额。
 
@@ -246,7 +294,7 @@ openssl rand -hex 32
 | `wnam` | `北美西部｜Cloudflare优选` | `cf-north-america-west` |
 | `oc` | `大洋洲｜Cloudflare优选` | `cf-oceania` |
 
-Cloudflare 的 `locationHint` 只在该对象首次创建时生效，是选择附近数据中心的提示。**即使使用大区名称，也不能保证始终从该大洲或大区出站。** 对象可能被放置在其他支持的地区，出口 IP 的地理数据库也可能有不同结果。更改现有节点的提示不会自动迁移对象；需要重新安排位置时应新建节点 ID，再验证出口。
+legacy 模式的 Cloudflare `locationHint` 只在对象首次创建时生效，是选择附近数据中心的提示。无持久化模式没有对象位置选择，`location_hint` 只保留为 XBoard 节点说明。**两种模式都不能保证始终从该大洲或大区出站。** 出口 IP 的地理数据库也可能有不同结果。
 
 Cloudflare 文档还列出 `sam`、`afr`、`me`，但目前明确说明这些位置尚不直接创建对象，会使用附近支持的地区，因此本项目没有将它们作为南美、非洲或中东的独立出口宣传。不能据此创建“遍布全球国家”的保证。
 
@@ -279,22 +327,22 @@ WebSocket 返回 `101` 只证明升级成功。完成 VLESS 用户授权、目�
 
 ## 授权、配额与流量上报
 
-每个对象定期从 XBoard 更新可用用户列表。新授权、封禁、套餐到期、UUID 重置和余额耗尽，会在用户同步以及面板自身的流量处理完成后生效。该时间窗口内可能继续产生流量，本项目不承诺瞬时撤销或零超额；不要把降低同步间隔当作严格的全局额度控制。
+无持久化默认模式在每次 WebSocket 握手前调用 XBoard user API，因此新连接会读取
+当时的授权、套餐和余额状态；已经建立的连接不会被跨请求主动撤销。每条连接的真实
+TCP 载荷在关闭时通过 v2 report API 上报一次。TLS、WebSocket 和 VLESS 封装开销不
+计入载荷，**不要在 Worker 中再乘以节点流量倍率**：XBoard 会应用自己的倍率。
 
-Worker 按用户累计真实 TCP 载荷的上传和下载字节，通过 v2 report API 上报。TLS、WebSocket 和 VLESS 封装开销不计入载荷。**不要在 Worker 中再乘以节点流量倍率**：XBoard 会应用自己的倍率，重复相乘会造成重复计费。
+关闭时的上报是 best-effort。请求失败或响应不明确时，Worker 没有持久队列可以重试；
+也不会自动重放，因为 report API 没有批次幂等键，重放可能重复扣费。`/admin/status`
+只显示当前 isolate 的临时计数，不代表全局在线人数或待上报总量。
 
-流量批次存放在 Durable Object 的持久存储中。XBoard 当前 report API 没有批次幂等键，也不能查询某个批次是否已扣费。当网络中断或响应不明确时，Worker 无法判断面板是否接受过这一批数据，因此保留该批次并暂停相关对象的新代理流量，等待人工核对。
-
-使用管理接口查看状态，令牌放在 HTTP Header 中：
+如果需要持久账本、定时上报、失败批次隔离和人工 reconcile，使用 legacy 配置
+`npm run deploy:durable`。legacy Worker 的管理接口如下：
 
 ```sh
 curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
   https://cf-asia-ne.example.com/admin/status
-```
 
-核对面板日志及流量处理记录后，按实际结果提交：
-
-```sh
 curl -X POST https://cf-asia-ne.example.com/admin/reconcile \
   -H "Authorization: Bearer <ADMIN_TOKEN>" \
   -H "Content-Type: application/json" \
@@ -304,18 +352,10 @@ curl -X POST https://cf-asia-ne.example.com/admin/reconcile \
 - `accepted`：确认面板已接受，不再发送这一批。
 - `not-accepted`：确认面板没有接受，恢复到待发送状态。
 
-不要根据一次客户端超时就选择 `not-accepted`，也不要直接删除对象存储或反复发送相同批次。这个流程避免已知的重复扣费风险，但不提供跨 Cloudflare 与 XBoard 的严格 exactly-once 事务。传输与流量记账之间没有跨网络事务，运行时异常也可能影响即时计数，应使用面板和 Cloudflare 日志核对测试结果。
-
-管理接口不提供给订阅用户；`ADMIN_TOKEN` 和 `PANEL_TOKEN` 只保存在 Cloudflare Secret 中。全球模式按入口 colo 分片，查看和处理状态时需要针对实际受影响的对象，不能把一个入口的状态当作所有全球对象的汇总。
-
-全球节点的管理请求默认查看当前入口 colo 对应的对象。已知需要处理的 colo 时，可在管理 URL 中添加 `?colo=FRA` 等三位大写代码：
-
-```sh
-curl -H "Authorization: Bearer <ADMIN_TOKEN>" \
-  'https://cf-global.example.com/admin/status?colo=FRA'
-```
-
-核对同一个全球对象时也把 `?colo=FRA` 添加到 `/admin/reconcile` URL。这个选择器只对通过管理令牌验证的全球节点管理请求生效，不允许普通代理客户端自行指定对象位置。地区节点无需该参数。定时任务维护地区对象，全球对象由连接时安排的 alarm 独立维护。
+不要根据一次客户端超时就选择 `not-accepted`，也不要直接删除 legacy 对象存储或反复
+发送相同批次。这个流程避免已知的重复扣费风险，但不提供跨 Cloudflare 与 XBoard
+的严格 exactly-once 事务。legacy 全球节点按入口 colo 分片，管理请求可用
+`?colo=FRA` 选择已知对象；无持久化模式不支持这个对象选择器。
 
 ## 平台限制与运行成本
 
@@ -325,7 +365,7 @@ Cloudflare 的 TCP API 禁止连接 Cloudflare IP 段、localhost、私网地址
 
 TCP API 是直接连接目标的原始字节流。目标 HTTPS 由客户端自行握手；Worker 不解密客户端到目标的 TLS。客户端到 Cloudflare 的 WebSocket 则使用入口 HTTPS 证书。
 
-Durable Objects 的请求、SQLite 存储和活跃时长会产生用量。转发中的 TCP 与 WebSocket 长连接会保持对象活跃，不能按普通短请求或空闲休眠应用估算成本；免费方案达到限额后相关操作会失败。上线前设置合理保护上限，关注账号用量和实际长连接成本。
+无持久化默认模式不创建 Durable Objects SQLite 存储，因此不会产生该项存储空间占用；仍会消耗普通 Worker 请求、CPU、子请求和长连接运行时间配额。转发中的 TCP 与 WebSocket 长连接会持续占用运行时资源，需关注账号用量。legacy 模式还会产生 Durable Objects 请求、SQLite 存储和活跃时长用量；免费方案达到任一限额后相关操作会失败。
 
 ## 常见问题
 
@@ -337,7 +377,7 @@ Durable Objects 的请求、SQLite 存储和活跃时长会产生用量。转发
 | 节点没有可用用户 | 权限组、用户封禁/到期/余额，面板是否兼容 v2 server API |
 | 订阅仍显示旧参数 | 保存新的节点参数并刷新客户端订阅，确认 Flow 留空、普通 TLS 开启 |
 | Clash 测速 timeout、Shadowrocket 只有延迟 | 先用 DoH 查询域名是否解析到 Cloudflare；某些网络的系统 DNS 会返回错误地址。确认服务器地址、SNI、Host 和 Path 完全来自最新订阅，并让客户端使用可直连的 TCP/DoH DNS，避免把 DNS 请求强制送入仅支持 TCP 的此节点。若 Clash Verge 的默认测速地址是 `https://cp.cloudflare.com/generate_204`，请改为 `https://www.gstatic.com/generate_204`：Cloudflare Worker 不能连接 Cloudflare 自身 IP，前一个地址会造成误报 Timeout；改测速地址后再测，并以真实网页访问为准。 |
-| 有余额却暂停连接 | 查看 `/admin/status` 是否存在待核对批次或达到未上报流量保护上限 |
+| 有余额却暂停连接 | 无持久化模式先检查 XBoard user API；legacy 模式再查看 `/admin/status` 是否存在待核对批次或达到未上报流量保护上限 |
 | IP 查询显示其他地区 | 位置提示与出口地理数据库均不保证国家；验证真实 TCP 出口，使用大区显示名称 |
 | UDP 或 QUIC 应用不可用 | 本项目只实现 TCP；使用 TCP/DoH，或选择支持 UDP 的独立服务器节点 |
 
@@ -350,15 +390,18 @@ npm run check
 npx wrangler dev
 ```
 
-填写自己的测试 panel、全局 `server_token` 和 node 信息；`MACHINE_ID` 留空即可测试 machine-less 模式。`.dev.vars` 已被 Git 忽略；示例中的 token 只作占位，不能用于生产。单元测试覆盖配置、协议处理和授权/上报行为；本地模拟不会证明 Cloudflare 的真实对象位置或 TCP 出口能力。
+填写自己的测试 panel、全局 `server_token` 和 node 信息；`MACHINE_ID` 留空即可测试 machine-less 模式。`.dev.vars` 已被 Git 忽略；示例中的 token 只作占位，不能用于生产。默认 `npx wrangler dev` 使用无持久化入口；需要测试 legacy 对象时运行 `npx wrangler dev --config wrangler.durable.jsonc`。单元测试覆盖配置、协议处理和授权/上报行为；本地模拟不会证明 Cloudflare 的真实对象位置或 TCP 出口能力。
 
 ## 配置文件与参考
 
-- [`wrangler.jsonc`](wrangler.jsonc)：Worker、SQLite Durable Object 绑定及定时任务。
+- [`wrangler.jsonc`](wrangler.jsonc)：默认无持久化 Worker 配置。
+- [`src/index.js`](src/index.js)：默认入口的 VLESS、授权和尽力上报实现。
+- [`wrangler.durable.jsonc`](wrangler.durable.jsonc)：legacy Durable Objects 配置，保留已有精确统计 namespace 的部署方式。
+- [`src/durable-index.js`](src/durable-index.js)：legacy Durable Objects 入口。
+- [`src/stateless-report.js`](src/stateless-report.js)：无持久化关闭上报数据构造。
 - [`.dev.vars.example`](.dev.vars.example)：本地变量模板。
 - [`examples/region-map.example.json`](examples/region-map.example.json)：九个全球/大区入口模板。
 - [`examples/xboard-node.example.json`](examples/xboard-node.example.json)：新增 XBoard 节点模板。
-- [Cloudflare Durable Objects 位置提示](https://developers.cloudflare.com/durable-objects/reference/data-location/)。
 - [Cloudflare TCP API 及禁止目标](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)。
 - [Cloudflare GitHub 部署配置](https://developers.cloudflare.com/workers/ci-cd/builds/configuration/)。
-- [Durable Objects 用量与价格](https://developers.cloudflare.com/durable-objects/platform/pricing/)。
+- [Durable Objects 用量与价格](https://developers.cloudflare.com/durable-objects/platform/pricing/)（仅 legacy 模式）。

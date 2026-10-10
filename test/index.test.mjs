@@ -85,7 +85,7 @@ async function fixture(t, patch = {}) {
     await module.link((specifier, importer) => load(specifier.startsWith('cloudflare:') ? specifier : new URL(specifier, importer.identifier).href));
     return module;
   }
-  const module = await load(new URL('../src/index.js', import.meta.url).href);
+  const module = await load(new URL('../src/durable-index.js', import.meta.url).href);
   await module.evaluate();
   const node = new module.namespace.RegionalNode(ctx, env);
   await initializing;

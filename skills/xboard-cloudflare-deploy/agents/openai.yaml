@@ -1,7 +1,7 @@
 interface:
   display_name: "XBoard Cloudflare Worker 部署"
   short_description: "用 AI 部署并验证 XBoard Cloudflare Worker 节点"
-  default_prompt: "使用 $xboard-cloudflare-deploy 检查这个仓库，先确认 GitHub 和 Cloudflare 插件/MCP 已连接，再规划并部署一个 machine-less XBoard VLESS 节点；外部修改前先列出变更并请求授权，部署后验证健康检查、订阅和流量上报。"
+  default_prompt: "使用 $xboard-cloudflare-deploy 检查这个仓库，先确认 GitHub 和 Cloudflare 插件/MCP 已连接，再规划并部署默认无持久化的 machine-less XBoard VLESS 节点；外部修改前先列出变更并请求授权，部署后验证健康检查、订阅和尽力流量上报。"
 
 dependencies:
   tools:

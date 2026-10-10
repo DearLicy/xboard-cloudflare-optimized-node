@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "check": "node --experimental-vm-modules --test test/*.test.mjs",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "deploy:durable": "wrangler deploy --config wrangler.durable.jsonc"
   },
   "devDependencies": {
     "wrangler": "^4.0.0"

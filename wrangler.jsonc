@@ -1,12 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "xboard-cloudflare-node",
+  "name": "xboard-cloudflare-node-stateless",
   "main": "src/index.js",
   "compatibility_date": "2026-10-10",
   "workers_dev": false,
   "keep_vars": true,
-  "durable_objects": { "bindings": [{ "name": "NODES", "class_name": "RegionalNode" }] },
-  "migrations": [{ "tag": "v2-regional-node", "new_sqlite_classes": ["RegionalNode"] }],
-  "triggers": { "crons": ["* * * * *"] },
   "observability": { "enabled": false }
 }
