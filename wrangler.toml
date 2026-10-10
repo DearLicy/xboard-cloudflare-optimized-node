@@ -3,5 +3,6 @@ main = "src/index.js"
 compatibility_date = "2026-10-10"
 workers_dev = false
 
-# Configure these values in the Cloudflare dashboard or with `wrangler secret`/`wrangler deploy`:
-# ORIGIN_HOST, ORIGIN_PORT, WS_PATH, HEALTH_PATH
+# Configure ORIGIN_HOST, ORIGIN_PORT, WS_PATH, PATH_TOKEN, HEALTH_PATH, and
+# MAX_CONNECTIONS in the Cloudflare dashboard. They are intentionally omitted
+# here so a GitHub import cannot publish a source address or a shared path.

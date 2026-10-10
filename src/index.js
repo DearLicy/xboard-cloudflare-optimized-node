@@ -1,5 +1,25 @@
 const DEFAULT_PATH = "/cf-vless";
 const DEFAULT_HEALTH_PATH = "/healthz";
+let activeConnections = 0;
+
+function normalizePath(value, fallback) {
+  const path = String(value || fallback).trim();
+  if (!path.startsWith("/") || path.includes("?")) return fallback;
+  return path.length > 1 ? path.replace(/\/+$/, "") : "/";
+}
+
+function configuredWebSocketPath(env) {
+  const base = normalizePath(env.WS_PATH, DEFAULT_PATH);
+  const token = String(env.PATH_TOKEN || "").trim();
+  if (!token) return base;
+  if (!/^[A-Za-z0-9._~-]{8,128}$/.test(token)) return null;
+  return `${base}/${token}`;
+}
+
+function maxConnections(env) {
+  const value = Number.parseInt(String(env.MAX_CONNECTIONS || "64"), 10);
+  return Number.isFinite(value) && value >= 0 ? value : 64;
+}
 
 function textResponse(body, status = 200, headers = {}) {
   return new Response(body, {
@@ -41,7 +61,7 @@ function relay(source, destination, onFailure) {
   source.addEventListener("error", onFailure);
 }
 
-function bridge(clientSocket, originSocket) {
+function bridge(clientSocket, originSocket, onClose) {
   clientSocket.accept();
   originSocket.accept();
 
@@ -49,12 +69,14 @@ function bridge(clientSocket, originSocket) {
   const fail = () => {
     if (finished) return;
     finished = true;
+    onClose();
     closeQuietly(clientSocket, 1011, "upstream failure");
     closeQuietly(originSocket, 1011, "upstream failure");
   };
   const closeBoth = () => {
     if (finished) return;
     finished = true;
+    onClose();
     closeQuietly(clientSocket);
     closeQuietly(originSocket);
   };
@@ -77,44 +99,51 @@ async function proxyWebSocket(request, env) {
   if (!/^\d{1,5}$/.test(originPort)) {
     return textResponse("origin port is not configured", 500);
   }
+  const limit = maxConnections(env);
+  if (limit > 0 && activeConnections >= limit) {
+    return textResponse("connection limit reached", 503, {
+      "retry-after": "10",
+    });
+  }
 
-  const originHeaders = new Headers(request.headers);
-  // Let fetch generate the upstream Host and WebSocket handshake headers.
-  originHeaders.delete("Host");
-  originHeaders.delete("Cf-Connecting-Ip");
-  originHeaders.delete("Cf-Connecting-IPv6");
-  originHeaders.delete("Cf-Ray");
-  originHeaders.delete("X-Forwarded-For");
-  originHeaders.delete("X-Forwarded-Proto");
-  originHeaders.set("Upgrade", "websocket");
-
-  const upstreamURL = `http://${originHost}:${originPort}${url.pathname}${url.search}`;
-  let upstreamResponse;
+  const upstreamURL = `ws://${originHost}:${originPort}${url.pathname}${url.search}`;
+  let upstreamSocket;
   try {
-    upstreamResponse = await fetch(upstreamURL, {
-      method: "GET",
-      headers: originHeaders,
+    upstreamSocket = new WebSocket(upstreamURL);
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("upstream timeout")), 10000);
+      upstreamSocket.addEventListener("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+      upstreamSocket.addEventListener("error", () => {
+        clearTimeout(timeout);
+        reject(new Error("upstream websocket error"));
+      }, { once: true });
     });
   } catch {
     return textResponse("origin unavailable", 502);
   }
 
-  if (upstreamResponse.status !== 101 || !upstreamResponse.webSocket) {
-    return textResponse("origin websocket upgrade failed", 502);
-  }
-
   const pair = new WebSocketPair();
   const clientSocket = pair[0];
   const workerSocket = pair[1];
-  bridge(workerSocket, upstreamResponse.webSocket);
+  activeConnections += 1;
+  bridge(workerSocket, upstreamSocket, () => {
+    activeConnections = Math.max(0, activeConnections - 1);
+  });
   return new Response(null, { status: 101, webSocket: clientSocket });
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const wsPath = String(env.WS_PATH || DEFAULT_PATH);
-    const healthPath = String(env.HEALTH_PATH || DEFAULT_HEALTH_PATH);
+    const wsPath = configuredWebSocketPath(env);
+    const healthPath = normalizePath(env.HEALTH_PATH, DEFAULT_HEALTH_PATH);
+
+    if (!wsPath) {
+      return textResponse("invalid path token", 500);
+    }
 
     if (url.pathname === healthPath && request.method === "GET") {
       return jsonResponse({ ok: true, service: "xboard-cloudflare-node" });

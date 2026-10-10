@@ -44,9 +44,11 @@ Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudfla
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `WS_PATH` | `/cf-vless` | 客户端和源站必须一致的 WebSocket 路径 |
+| `PATH_TOKEN` | 空 | 可选的随机路径令牌。设置后实际路径为 `WS_PATH/PATH_TOKEN`，XBoard 的 Path 也必须填写完整路径 |
 | `HEALTH_PATH` | `/healthz` | 健康检查路径 |
+| `MAX_CONNECTIONS` | `64` | 单个 Worker 隔离实例的并发连接上限；设为 `0` 表示不限制。它是保护性上限，不是全局精确配额 |
 
-不要把 Cloudflare API Token、XBoard 机器令牌、用户 UUID 或私钥写入 GitHub 仓库。源站变量不需要使用 Secret，但建议在 Cloudflare Dashboard 中配置，而不是写进 `wrangler.toml`。
+不要把 Cloudflare API Token、XBoard 机器令牌、用户 UUID 或私钥写入 GitHub 仓库。建议使用长度至少 32 位的随机 `PATH_TOKEN`，并在 Cloudflare Dashboard 的变量中配置；路径令牌会成为 XBoard 节点的 Path。错误路径会直接返回 404，Worker 也不会读取用户提交的目标地址。
 
 ## 绑定自定义域名
 
@@ -65,7 +67,7 @@ Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudfla
 - Protocol：`VLESS`
 - Network：`WebSocket`
 - TLS：由 Cloudflare 在客户端侧终止，源站监听纯 HTTP
-- Path：`/cf-vless`
+- Path：`/cf-vless`，如果设置了 `PATH_TOKEN`，则填写 `/cf-vless/<PATH_TOKEN>` 的完整值
 - Listen port：`39004`（或你自己的 `ORIGIN_PORT`）
 
 然后在 XBoard 新建一个与该入站对应的节点：

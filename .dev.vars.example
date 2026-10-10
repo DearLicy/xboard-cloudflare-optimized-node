@@ -2,4 +2,8 @@
 ORIGIN_HOST=127.0.0.1
 ORIGIN_PORT=39004
 WS_PATH=/cf-vless
+# Optional: use a random 32+ character value and put the resulting full path
+# (/cf-vless/<PATH_TOKEN>) into the XBoard node's WebSocket Path.
+PATH_TOKEN=
 HEALTH_PATH=/healthz
+MAX_CONNECTIONS=64
