@@ -266,6 +266,7 @@ Durable Objects 的请求、SQLite 存储和活跃时长会产生用量。转发
 | XBoard user API 返回 403 | global 模式检查全局 `server_token`；dedicated 模式再检查 machine token、启用状态和节点归属；同时检查面板 WAF |
 | 节点没有可用用户 | 权限组、用户封禁/到期/余额，面板是否兼容 v2 server API |
 | 订阅仍显示旧参数 | 保存新的节点参数并刷新客户端订阅，确认 Flow 留空、普通 TLS 开启 |
+| Clash 测速 timeout、Shadowrocket 只有延迟 | 先用 DoH 查询域名是否解析到 Cloudflare；某些网络的系统 DNS 会返回错误地址。确认服务器地址、SNI、Host 和 Path 完全来自最新订阅，并让客户端使用可直连的 TCP/DoH DNS，避免把 DNS 请求强制送入仅支持 TCP 的此节点 |
 | 有余额却暂停连接 | 查看 `/admin/status` 是否存在待核对批次或达到未上报流量保护上限 |
 | IP 查询显示其他地区 | 位置提示与出口地理数据库均不保证国家；验证真实 TCP 出口，使用大区显示名称 |
 | UDP 或 QUIC 应用不可用 | 本项目只实现 TCP；使用 TCP/DoH，或选择支持 UDP 的独立服务器节点 |
