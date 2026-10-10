@@ -1,7 +1,11 @@
 const DEFAULT_PATH = "/cf-vless";
 const DEFAULT_HEALTH_PATH = "/healthz";
 const DEFAULT_REQUIRE_PATH_TOKEN = true;
-let activeConnections = 0;
+const DEFAULT_MAX_CONNECTIONS = 64;
+// Workers environment values and Secrets are limited to roughly 5 KiB.
+const MAX_ORIGIN_MAP_BYTES = 4800;
+const MAX_ORIGIN_ENTRIES = 32;
+const activeConnections = new Map();
 
 function normalizePath(value, fallback) {
   const path = String(value || fallback).trim();
@@ -9,24 +13,164 @@ function normalizePath(value, fallback) {
   return path.length > 1 ? path.replace(/\/+$/, "") : "/";
 }
 
-function requiresPathToken(env) {
-  const value = String(env.REQUIRE_PATH_TOKEN ?? DEFAULT_REQUIRE_PATH_TOKEN)
-    .trim()
-    .toLowerCase();
-  return !["0", "false", "no", "off"].includes(value);
+function parseBoolean(value, fallback) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
-function configuredWebSocketPath(env) {
-  const base = normalizePath(env.WS_PATH, DEFAULT_PATH);
-  const token = String(env.PATH_TOKEN || "").trim();
-  if (!token) return requiresPathToken(env) ? null : base;
+function requiresPathToken(config) {
+  return parseBoolean(config.requirePathToken, DEFAULT_REQUIRE_PATH_TOKEN);
+}
+
+function configuredWebSocketPath(config) {
+  const base = normalizePath(config.wsPath, DEFAULT_PATH);
+  const token = String(config.pathToken || "").trim();
+  if (!token) return requiresPathToken(config) ? null : base;
   if (!/^[A-Za-z0-9._~-]{16,128}$/.test(token)) return null;
   return base === "/" ? `/${token}` : `${base}/${token}`;
 }
 
-function maxConnections(env) {
-  const value = Number.parseInt(String(env.MAX_CONNECTIONS || "64"), 10);
-  return Number.isFinite(value) && value >= 0 ? value : 64;
+function maxConnections(value) {
+  const parsed = Number.parseInt(String(value ?? DEFAULT_MAX_CONNECTIONS), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_MAX_CONNECTIONS;
+}
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function entryValue(entry, key, fallback) {
+  return entry && hasOwn(entry, key) ? entry[key] : fallback;
+}
+
+function legacyOriginConfig(env) {
+  return {
+    host: env.ORIGIN_HOST,
+    port: env.ORIGIN_PORT,
+    scheme: env.ORIGIN_SCHEME,
+    wsPath: env.WS_PATH,
+    pathToken: env.PATH_TOKEN,
+    requirePathToken: env.REQUIRE_PATH_TOKEN,
+    maxConnections: env.MAX_CONNECTIONS,
+  };
+}
+
+function mapOriginConfig(entry, env) {
+  return {
+    host: entryValue(entry, "host", ""),
+    port: entryValue(entry, "port", "39004"),
+    scheme: entryValue(entry, "scheme", "ws"),
+    wsPath: entryValue(entry, "path", DEFAULT_PATH),
+    pathToken: entryValue(entry, "token", ""),
+    requirePathToken: entryValue(entry, "require_path_token", env.REQUIRE_PATH_TOKEN),
+    maxConnections: entryValue(entry, "max_connections", env.MAX_CONNECTIONS),
+  };
+}
+
+function normalizeRouteHost(value) {
+  const host = String(value || "").trim().toLowerCase();
+  if (!host || host.length > 253 || /[\s/?#:]/.test(host)) return null;
+  if (/^[\d.]+$/.test(host)) return isValidIPv4(host) ? host : null;
+  const labels = host.split(".");
+  if (labels.some((label) =>
+    label.length < 1 || label.length > 63 ||
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) {
+    return null;
+  }
+  return host;
+}
+
+function parseOriginMap(env) {
+  const raw = String(env.ORIGIN_MAP || "").trim();
+  if (!raw) return { mode: "single" };
+  if (new TextEncoder().encode(raw).byteLength > MAX_ORIGIN_MAP_BYTES) {
+    return { error: "origin map is too large" };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { error: "invalid origin map" };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { error: "invalid origin map" };
+  }
+
+  const entries = Object.entries(parsed);
+  if (entries.length === 0 || entries.length > MAX_ORIGIN_ENTRIES) {
+    return { error: "invalid origin map" };
+  }
+
+  const map = new Map();
+  for (const [host, entry] of entries) {
+    const routeHost = normalizeRouteHost(host);
+    if (!routeHost || !entry || typeof entry !== "object" || Array.isArray(entry)) {
+      return { error: "invalid origin map" };
+    }
+    if (map.has(routeHost)) return { error: "invalid origin map" };
+    map.set(routeHost, entry);
+  }
+  return { mode: "map", entries: map };
+}
+
+function normalizeOriginConfig(config) {
+  const originHost = normalizeOriginHost(config.host);
+  if (!originHost) return { error: "origin is not configured" };
+
+  const originPort = String(config.port ?? "39004").trim();
+  const portNumber = Number.parseInt(originPort, 10);
+  if (!/^\d{1,5}$/.test(originPort) || portNumber < 1 || portNumber > 65535) {
+    return { error: "origin port is not configured" };
+  }
+
+  const originScheme = String(config.scheme ?? "ws").trim().toLowerCase();
+  if (originScheme !== "ws" && originScheme !== "wss") {
+    return { error: "origin scheme is not configured" };
+  }
+
+  const normalized = {
+    ...config,
+    originHost,
+    originPort,
+    originScheme,
+    maxConnections: maxConnections(config.maxConnections),
+  };
+  const webSocketPath = configuredWebSocketPath(normalized);
+  if (!webSocketPath) return { error: "invalid path token" };
+  normalized.webSocketPath = webSocketPath;
+  return { config: normalized };
+}
+
+function isSelfOrigin(url, config) {
+  const requestHost = normalizeOriginHost(url.hostname);
+  return requestHost && requestHost.toLowerCase() === config.originHost.toLowerCase();
+}
+
+function resolveOrigin(url, env) {
+  const originMap = parseOriginMap(env);
+  if (originMap.error) return originMap;
+  if (originMap.mode === "single") {
+    const normalized = normalizeOriginConfig(legacyOriginConfig(env));
+    if (normalized.error) return normalized;
+    return isSelfOrigin(url, normalized.config)
+      ? { error: "origin cannot match worker host" }
+      : { key: "__single__", ...normalized };
+  }
+
+  const routeHost = normalizeRouteHost(url.hostname);
+  const entry = routeHost ? originMap.entries.get(routeHost) : undefined;
+  if (!entry) return { notFound: true };
+  const normalized = normalizeOriginConfig(mapOriginConfig(entry, env));
+  if (normalized.error) return normalized;
+  return isSelfOrigin(url, normalized.config)
+    ? { error: "origin cannot match worker host" }
+    : { key: routeHost, ...normalized };
 }
 
 function textResponse(body, status = 200, headers = {}) {
@@ -114,19 +258,22 @@ function closeQuietly(socket, code = 1000, reason = "closed") {
 }
 
 function relay(source, destination, onFailure) {
+  let queue = Promise.resolve();
+  let stopped = false;
   source.addEventListener("message", (event) => {
-    const send = (data) => {
+    queue = queue.then(async () => {
+      if (stopped) return;
       try {
+        const data = typeof Blob !== "undefined" && event.data instanceof Blob
+          ? await event.data.arrayBuffer()
+          : event.data;
+        if (stopped) return;
         destination.send(data);
       } catch (error) {
+        stopped = true;
         onFailure(error);
       }
-    };
-    if (typeof Blob !== "undefined" && event.data instanceof Blob) {
-      event.data.arrayBuffer().then(send).catch(onFailure);
-    } else {
-      send(event.data);
-    }
+    });
   });
   source.addEventListener("close", () => closeQuietly(destination));
   source.addEventListener("error", onFailure);
@@ -164,23 +311,24 @@ function bridge(clientSocket, originSocket, onClose) {
   originSocket.addEventListener("error", fail);
 }
 
-async function proxyWebSocket(request, env) {
-  const url = new URL(request.url);
-  const originHost = normalizeOriginHost(env.ORIGIN_HOST);
-  const originPort = String(env.ORIGIN_PORT || "39004").trim();
-  const originScheme = String(env.ORIGIN_SCHEME || "ws").trim().toLowerCase();
-  if (!originHost) {
-    return textResponse("origin is not configured", 500);
+function reserveConnection(key, limit) {
+  const current = activeConnections.get(key) || 0;
+  if (limit > 0 && current >= limit) return false;
+  activeConnections.set(key, current + 1);
+  return true;
+}
+
+function releaseConnection(key) {
+  const current = activeConnections.get(key) || 0;
+  if (current <= 1) {
+    activeConnections.delete(key);
+  } else {
+    activeConnections.set(key, current - 1);
   }
-  const portNumber = Number.parseInt(originPort, 10);
-  if (!/^\d{1,5}$/.test(originPort) || portNumber < 1 || portNumber > 65535) {
-    return textResponse("origin port is not configured", 500);
-  }
-  if (originScheme !== "ws" && originScheme !== "wss") {
-    return textResponse("origin scheme is not configured", 500);
-  }
-  const limit = maxConnections(env);
-  if (limit > 0 && activeConnections >= limit) {
+}
+
+async function proxyWebSocket(request, url, originKey, config) {
+  if (!reserveConnection(originKey, config.maxConnections)) {
     return textResponse("connection limit reached", 503, {
       "retry-after": "10",
     });
@@ -189,15 +337,14 @@ async function proxyWebSocket(request, env) {
   // Reserve a slot before awaiting the upstream handshake. Otherwise several
   // simultaneous handshakes can all observe the same counter and exceed the
   // configured limit.
-  activeConnections += 1;
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
-    activeConnections = Math.max(0, activeConnections - 1);
+    releaseConnection(originKey);
   };
 
-  const upstreamURL = `${originScheme}://${originHost}:${originPort}${url.pathname}${url.search}`;
+  const upstreamURL = `${config.originScheme}://${config.originHost}:${config.originPort}${url.pathname}${url.search}`;
   let upstreamSocket;
   try {
     upstreamSocket = new WebSocket(upstreamURL);
@@ -228,25 +375,38 @@ async function proxyWebSocket(request, env) {
   const pair = new WebSocketPair();
   const clientSocket = pair[0];
   const workerSocket = pair[1];
-  bridge(workerSocket, upstreamSocket, release);
-  return new Response(null, { status: 101, webSocket: clientSocket });
+  try {
+    bridge(workerSocket, upstreamSocket, release);
+    return new Response(null, { status: 101, webSocket: clientSocket });
+  } catch {
+    // A runtime can reject the 101 response or the WebSocketPair setup. Do
+    // not leave the upstream socket or the per-route quota slot behind.
+    release();
+    closeQuietly(workerSocket, 1011, "worker websocket setup failed");
+    closeQuietly(clientSocket, 1011, "worker websocket setup failed");
+    closeQuietly(upstreamSocket, 1011, "worker websocket setup failed");
+    return textResponse("websocket setup failed", 500);
+  }
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const wsPath = configuredWebSocketPath(env);
     const healthPath = normalizePath(env.HEALTH_PATH, DEFAULT_HEALTH_PATH);
+    const selection = resolveOrigin(url, env);
 
-    if (!wsPath) {
-      return textResponse("invalid path token", 500);
+    if (selection.error) {
+      return textResponse(selection.error, 500);
+    }
+    if (selection.notFound) {
+      return textResponse("not found", 404);
     }
 
     if (url.pathname === healthPath && request.method === "GET") {
       return jsonResponse({ ok: true, service: "xboard-cloudflare-node" });
     }
 
-    if (url.pathname !== wsPath) {
+    if (url.pathname !== selection.config.webSocketPath) {
       return textResponse("not found", 404);
     }
 
@@ -256,6 +416,6 @@ export default {
       });
     }
 
-    return proxyWebSocket(request, env);
+    return proxyWebSocket(request, url, selection.key, selection.config);
   },
 };

@@ -1,10 +1,12 @@
 name = "xboard-cloudflare-node"
-# Each independently deployed Worker must have a unique name in this account.
-# Change this value when importing the repository for another region/node.
 main = "src/index.js"
 compatibility_date = "2026-10-11"
 workers_dev = true
+# Keep Variables configured in the Cloudflare dashboard when deploying from
+# GitHub or with Wrangler. Secrets are preserved by Wrangler automatically.
+keep_vars = true
 
-# Configure ORIGIN_HOST, ORIGIN_PORT, WS_PATH, PATH_TOKEN, HEALTH_PATH, and
-# MAX_CONNECTIONS in the Cloudflare dashboard. They are intentionally omitted
-# here so a GitHub import cannot publish a source address or a shared path.
+# Configure ORIGIN_MAP (multi-region) or ORIGIN_HOST, ORIGIN_PORT, WS_PATH,
+# PATH_TOKEN, HEALTH_PATH, and MAX_CONNECTIONS in the Cloudflare dashboard.
+# They are intentionally omitted here so a GitHub import cannot publish a
+# source address or a shared path.

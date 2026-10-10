@@ -4,6 +4,7 @@
   "host": "cloudflare.example.com",
   "port": "443",
   "server_port": 39004,
+  "machine_id": "REPLACE_WITH_XBOARD_MACHINE_ID",
   "rate": 1,
   "protocol_settings": {
     "tls": 1,

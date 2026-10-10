@@ -1,4 +1,10 @@
 # Copy to .dev.vars for local development. Do not commit .dev.vars.
+# For multi-region mode, set ORIGIN_MAP to the JSON from
+# examples/origin-map.example.json. It takes precedence over these single-origin variables.
+# Runtime variables belong in Cloudflare Settings > Variables and Secrets;
+# Workers Builds variables are build-only and are not visible at runtime.
+# Store ORIGIN_MAP as a Secret in production; never commit the populated .dev.vars.
+ORIGIN_MAP=
 ORIGIN_HOST=127.0.0.1
 ORIGIN_PORT=39004
 ORIGIN_SCHEME=ws

@@ -1,112 +1,144 @@
 # XBoard Cloudflare 优化节点 Worker
 
-这是一个可以直接从 GitHub 导入 Cloudflare Workers 的固定源站 WebSocket 中继。它给 XBoard 的 VLESS+WebSocket 节点提供 Cloudflare Anycast 入口，客户端连接到 Cloudflare 分配的边缘地址，Worker 再把 WebSocket 字节流转发到你配置的固定源站。
+这是一个可从 GitHub 导入 Cloudflare Workers 的 VLESS + WebSocket 中继。**一个 Worker 可以绑定多个自定义域名**：每个域名对应一个地区和一个明确的 V2bX/XBoard 源站，用户只需按地区添加域名和映射条目，不必创建多个 Worker。
 
-Worker 只接受一个固定的 `ORIGIN_HOST:ORIGIN_PORT`，没有任意目标地址参数，因此不会变成开放代理。用户认证仍然由源站上的 XBoard 节点完成，每个用户继续使用自己的 UUID。
+Worker 只连接 `ORIGIN_MAP`（或单源站变量）中明确允许的源站，不接受客户端提交的目标地址，因此不会成为开放代理。XBoard/V2bX 仍负责用户 UUID、订阅和流量统计；Worker 不保存用户 UUID，也不替代节点 daemon。
+
+Cloudflare 域名是全球 Anycast **入口**。它不会把出口自动变成某个国家，出口地区取决于映射条目中的真实源站。要提供日本、香港、美国等固定出口，仍需在相应地区准备源站；一个 Worker 不能保证覆盖所有国家。
 
 ## 工作方式
 
 ```text
-XBoard 客户端 (VLESS + WS + TLS)
-              │ 443
-              ▼
-Cloudflare Custom Domain / Anycast
-              │ Worker WebSocket relay
-              ▼
-固定源站 VLESS + WS（纯 HTTP，例：39004）
+VLESS 客户端 (WS + TLS)
+       │ 443
+       ├── japan.example.com ──┐
+       └── hongkong.example.com┤
+                               ▼
+                         一个 Worker
+                         │       │
+                         ▼       ▼
+                      日本源站  香港源站
 ```
 
-Cloudflare 自定义域名默认提供 IPv4 和 IPv6 入口。入口是 Cloudflare Anycast，不能把它当作固定的美国、日本或香港出口；最终出口位置由你配置的源站决定。
+每个域名必须在 Worker 的 `ORIGIN_MAP` 中精确列出。未知域名和错误路径返回 404；缺少或格式错误的强制令牌会被当作配置错误拒绝。Worker 不会根据 URL 参数选择任意服务器。
 
-## 从 GitHub 导入部署
+## 从 GitHub 导入并独立部署
+
+此 Worker 是独立项目，不绑定佛罗里达、日本、香港或任何其他现成服务器。部署只发布 Worker 代码；源站和 XBoard 由你自行管理。
 
 1. Fork 或复制本仓库到自己的 GitHub 账号。
-2. 打开 Cloudflare Dashboard → **Workers & Pages** → **Create application** → **Import an existing Git repository**。
-3. 授权 GitHub 后选择本仓库。
-4. 构建设置使用：
-   - Framework preset：`None`
-   - Build command：留空
-   - Deploy command：`npx wrangler deploy`
-   - Root directory：`/`
-5. 在 Worker 的 **Settings → Variables and Secrets** 中配置下表变量，然后部署。
+2. Cloudflare Dashboard → **Workers & Pages** → **Create application** → **Import an existing Git repository**，选择该仓库。
+3. 构建设置：Framework preset 选 `None`，Build command 留空，Root directory 设为 `/`。
+4. Deploy command 可填 `npm run deploy`。本地部署也可运行 `npm install` 后执行 `npm run deploy`，或直接执行 `npx wrangler deploy --keep-vars`。
+5. 在 Worker 的 **Settings → Variables and Secrets** 配置运行时变量，然后部署。
 
-如果使用 Cloudflare 的 Git 集成，后续推送到仓库即可触发新的部署。也可以在本地安装 Wrangler 后运行 `npm install` 和 `npm run deploy`。
+仓库中的 [`wrangler.toml`](wrangler.toml) 已设置 `keep_vars = true`。这样从 GitHub 或 Wrangler 部署时不会清除 Dashboard 中配置的运行时变量；Cloudflare Secret 也不会因普通部署被删除。不要把源站地址、路径令牌、API Token、机器令牌、私钥或用户 UUID 提交到 GitHub。
 
-本仓库不绑定任何现成服务器，也不会自动修改 XBoard。每次部署都由你自己填写源站地址、路径令牌和连接上限；因此同一个仓库可以分别部署给不同的 v2bx/XBoard 节点。每个 Worker 都是独立部署实例，部署一个地区不会创建或修改佛罗里达、日本、香港等其他服务器上的服务。
+Cloudflare Workers Builds 里的 **Build variables and secrets** 只提供给构建步骤，不能作为 Worker 运行时配置。请在 **Settings → Variables and Secrets** 添加运行时变量；`ORIGIN_MAP` 建议选择 **Secret**。也可以用 `npx wrangler secret put ORIGIN_MAP` 上传。
 
-## 必填变量
+## 运行时变量
 
-| 变量 | 示例 | 说明 |
-| --- | --- | --- |
-| `ORIGIN_HOST` | `203.0.113.10` 或源站域名 | 固定的 VLESS+WS 源站地址，只填写主机名或 IP，不带协议和路径 |
-| `ORIGIN_PORT` | `39004` | 源站纯 HTTP WebSocket 端口 |
-| `ORIGIN_SCHEME` | `ws` | 源站协议，支持 `ws` 或 `wss`；Cloudflare 客户端入口仍然使用 HTTPS/WSS |
-| `PATH_TOKEN` | 随机 32 字符 | 生产环境必填，允许 16–128 个字母、数字及 `._~-` 字符；它会成为实际 WebSocket 路径的一部分 |
-
-可选变量：
+多地区部署使用 `ORIGIN_MAP`，设置后它优先于单源站变量。完整模板见 [`examples/origin-map.example.json`](examples/origin-map.example.json)。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `WS_PATH` | `/cf-vless` | 客户端和源站必须一致的 WebSocket 路径 |
-| `REQUIRE_PATH_TOKEN` | `true` | 默认强制要求 `PATH_TOKEN`；仅本地调试时可设为 `false` |
-| `HEALTH_PATH` | `/healthz` | 健康检查路径 |
-| `MAX_CONNECTIONS` | `64` | 单个 Worker 隔离实例的并发连接上限；设为 `0` 表示不限制。它是保护性上限，不是全局精确配额 |
+| `ORIGIN_MAP` | 空 | JSON 对象；键是绑定到同一 Worker 的自定义域名，值是该地区的源站配置。建议设为 Secret。 |
+| `ORIGIN_HOST` | 无 | 单源站兼容模式的源站域名、IPv4 或 IPv6；不要包含协议、端口或路径。 |
+| `ORIGIN_PORT` | `39004` | 单源站模式的源站 WebSocket 端口。 |
+| `ORIGIN_SCHEME` | `ws` | `ws` 或 `wss`。生产环境优先使用 `wss`，以加密 Worker 到源站的链路。 |
+| `WS_PATH` | `/cf-vless` | 单源站模式的基础路径。多地区模式在每个条目的 `path` 中设置。 |
+| `PATH_TOKEN` | 无 | 单源站模式的随机 16–128 字符令牌，允许字母、数字和 `._~-`。 |
+| `REQUIRE_PATH_TOKEN` | `true` | 默认强制令牌。仅本地调试可设为 `false`；生产不要关闭。 |
+| `HEALTH_PATH` | `/healthz` | GET 健康检查路径。健康检查不建立 WebSocket。 |
+| `MAX_CONNECTIONS` | `64` | 单源站模式的保护性并发上限；`0` 表示不限制，不建议生产使用。多地区可在条目中覆盖。 |
 
-不要把 Cloudflare API Token、XBoard 机器令牌、用户 UUID 或私钥写入 GitHub 仓库。建议使用长度至少 32 位的随机 `PATH_TOKEN`，并在 Cloudflare Dashboard 的变量中配置；路径令牌会成为 XBoard 节点的 Path。缺少令牌或令牌格式错误时 Worker 会返回配置错误，不会暴露未保护的默认路径。错误路径会直接返回 404，Worker 也不会读取用户提交的目标地址。
+`ORIGIN_MAP` 受 Cloudflare 变量/Secret 大小限制，Worker 会拒绝超过约 4.8 KiB 的内容，最多 32 个条目。将只使用的地区放入映射；达到限制时再按业务拆分 Worker。
 
-## 多地区和多节点部署
+### 多地区映射
 
-要增加一个地区，部署一个新的 Worker 实例，并把它指向该地区已经运行的 V2bX/XBoard VLESS+WebSocket 入站：
+```json
+{
+  "japan.example.com": {
+    "host": "203.0.113.10",
+    "port": 39004,
+    "scheme": "wss",
+    "path": "/cf-vless",
+    "token": "REPLACE_WITH_A_RANDOM_JAPAN_TOKEN",
+    "max_connections": 64
+  },
+  "hongkong.example.com": {
+    "host": "2001:db8::20",
+    "port": 39004,
+    "scheme": "wss",
+    "path": "/cf-vless",
+    "token": "REPLACE_WITH_A_RANDOM_HONGKONG_TOKEN",
+    "max_connections": 64
+  }
+}
+```
 
-1. 从本仓库创建一个独立的 GitHub 仓库，或在 Cloudflare Git 集成中重复导入本仓库。
-2. 修改 `wrangler.toml` 的 `name`，确保同一 Cloudflare 账号中的每个 Worker 名称唯一，例如 `xboard-cf-japan`、`xboard-cf-hongkong`、`xboard-cf-florida`。
-3. 在每个 Worker 自己的 Variables and Secrets 中填写该地区的 `ORIGIN_HOST`、`ORIGIN_PORT`、`PATH_TOKEN` 和连接上限。
-4. 为每个 Worker 绑定独立的自定义域名，并在 XBoard 中创建对应的节点，例如 `cf-japan.example.com`、`cf-hongkong.example.com`。
+每个条目支持：
 
-这样每个 XBoard 节点仍然有明确的源站地区和独立的流量统计。Cloudflare 自定义域名提供全球 Anycast 的 IPv4/IPv6 接入，用户通常会连接到较近的 Cloudflare 边缘；但 Cloudflare 边缘是入口，不是 VPN 出口，Worker 的出口位置仍由 `ORIGIN_HOST` 所在服务器决定。要让用户获得日本、香港、美国等固定出口，必须在这些地区分别运行源站节点。单个 Worker 不能保证覆盖全球所有国家，也不应通过客户端提交任意目标地址来伪造多地区出口。
+- `host`：真实地区源站的域名、IPv4 或 IPv6。IPv6 可填写 `2001:db8::20`，不要填写 URL。
+- `port`：源站 WebSocket 端口。
+- `scheme`：`ws` 或 `wss`；推荐 `wss`。
+- `path`：基础 WebSocket 路径，不要把令牌重复写进此字段。
+- `token`：该地区独立的随机令牌。
+- `max_connections`：该域名在**每个 Worker isolate**中的保护性并发上限。
+- `require_path_token`：可覆盖全局设置，生产环境保持默认 `true`。
 
-## 绑定自定义域名
+实际客户端路径是 `path/token`。例如上面的日本条目应在 XBoard 填 `/cf-vless/REPLACE_WITH_A_RANDOM_JAPAN_TOKEN`。如果基础 `path` 是 `/`，令牌路径就是 `/<token>`；只有将 `require_path_token` 明确设为 `false` 且没有令牌时，根路径才是 `/`。路径不能带查询字符串。
 
-`wrangler.toml` 默认保留 `workers.dev` 入口，便于首次部署后验证。生产使用时，在 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中绑定，例如 `cf-japan.example.com`。Cloudflare 会自动处理证书和 DNS。不要把 Worker 域名再套一层普通 DNS 代理，也不要在 Worker 中接受用户提交的目标地址。
+连接数计数按域名/源站键维护，且只在当前 Worker isolate 有效；Cloudflare 不同边缘实例之间不会共享这个计数。因此它是防止单个实例被占满的保护措施，不是账号级、全球级配额。应同时在源站防火墙、XBoard 和 Cloudflare 侧设置合理限制。
 
-部署后可访问 `https://cloudflare.example.com/healthz`，预期返回：
+## 绑定域名与健康检查
+
+在同一个 Worker 的 **Settings → Domains & Routes → Add Custom Domain** 中逐个添加 `japan.example.com`、`hongkong.example.com` 等域名。Cloudflare 会处理证书和 Worker 路由，不要把这些域名手动指向源站 A/AAAA 记录。
+
+多地区模式下，默认的 `*.workers.dev` 地址没有映射条目，所以访问它（包括 `/healthz`）会返回 404。这是预期行为，也可以避免把未配置入口暴露给扫描器。健康检查请使用已经加入 `ORIGIN_MAP` 的自定义域名：
+
+```sh
+curl -i https://japan.example.com/healthz
+```
+
+预期返回：
 
 ```json
 {"ok":true,"service":"xboard-cloudflare-node"}
 ```
 
-## 源站和 XBoard 配置
+如果你确实需要从 `workers.dev` 检查，必须把该完整主机名作为一个键加入 `ORIGIN_MAP`，并为它配置单独的源站条目；不要假设 `workers.dev` 会自动匹配第一个地区。单源站模式（不设置 `ORIGIN_MAP`）则可直接用 `workers.dev` 地址检查。
 
-源站必须先监听一个纯 WebSocket 的 VLESS 入站。以 `xboard-node` 为例：
+## 在 XBoard/V2bX 接入每个地区
+
+先在每个地区运行 V2bX/XBoard 的 VLESS + WebSocket 入站，端口和基础路径与对应映射条目一致。推荐：
 
 - Protocol：`VLESS`
 - Network：`WebSocket`
-- TLS：由 Cloudflare 在客户端侧终止，源站监听纯 HTTP
-- Path：`/cf-vless`，如果设置了 `PATH_TOKEN`，则填写 `/cf-vless/<PATH_TOKEN>` 的完整值
-- Listen port：`39004`（或你自己的 `ORIGIN_PORT`）
+- TLS：源站使用 `wss` 时开启源站 TLS；使用 `ws` 时 Worker 到源站是明文，客户端到 Cloudflare 仍可使用 HTTPS/WSS。
+- Path：源站必须接受 `path/token` 的完整路径。
+- Listen port：映射条目的 `port`。
 
-然后在 XBoard 新建一个与该入站对应的节点：
+然后在 XBoard 为每个域名单独新建节点：
 
-- 节点名称：`Cloudflare优化节点`
-- Host：你的 Worker 自定义域名
-- Port：`443`
-- Protocol：`VLESS`
-- Network：`WebSocket`
-- TLS：开启
-- Path：填写 Worker 的实际路径；未设置 `PATH_TOKEN` 时为 `WS_PATH`，设置后为 `WS_PATH/PATH_TOKEN`
-- Machine：选择实际监听 `ORIGIN_PORT` 的机器
-- 流量倍率：按你的计费策略设置，通常为 `1`
+- 名称：例如 `Cloudflare优化节点-日本`、`Cloudflare优化节点-香港`。
+- Host：该地区的 Worker 自定义域名。
+- Port：`443`。
+- Protocol/Network：`VLESS` / `WebSocket`。
+- TLS：开启，SNI 使用该自定义域名。
+- Path：该条目的 `path/token` 完整值。
+- Machine：选择实际运行该地区节点 daemon 的 XBoard machine。请填写有效的 `machine_id`，不要留空；没有 daemon 时面板可能无法取得 users 数据。
+- 流量倍率：按你的计费策略填写；示例使用 `1`，需要双倍计费时可改为 `2`。
 
-`examples/xboard-node.example.json` 提供了一份不含真实地址和密钥的协议字段示例，字段结构接近 v2bx/XBoard 的 VLESS 节点配置。
+[`examples/xboard-node.example.json`](examples/xboard-node.example.json) 是不含真实地址、令牌和用户 UUID 的字段示例。`machine_id` 使用占位符，部署时替换为实际 machine；Worker 不内置机器凭据或用户 UUID。XBoard 继续为用户生成 UUID，并负责订阅、在线状态和流量统计。
 
-XBoard 仍然为每个用户生成独立 UUID，Worker 只转发连接，不保存用户凭据，也不参与面板的在线状态和流量统计。流量统计由源站上的 XBoard 节点完成。
+## 正常的安全和平台边界
 
-## 源站防护和限制
-
-- 仅允许源站端口接收 VLESS+WS，并在源站防火墙中关闭不需要的端口。
-- 使用随机的 WebSocket 路径，并在 XBoard 与 Worker 中保持一致。
-- Cloudflare Worker 适合长连接中继，但受 Workers 的连接、CPU、带宽、单条消息大小和平台策略限制；当前 WebSocket 单条消息不能按任意大流量隧道理解。高并发或完整 UDP 业务应使用专用 TCP/UDP 转发产品或原生节点。
-- 当前 Worker 只转发 WebSocket/TCP 流量，不提供任意 UDP 隧道。
+- 使用每个地区独立的随机路径令牌，定期轮换并在 XBoard 与 Worker 同时更新。
+- 只在 `ORIGIN_MAP` 中列出需要的域名和源站，未知 Host/Path 返回匿名 404；错误响应不打印令牌、UUID 或源站地址。
+- 源站只开放所需 WebSocket 端口，并使用防火墙限制来源。生产优先使用 `wss`。
+- Worker 使用标准 WebSocket、精确 Host 映射和平台 API，不伪造 Host/SNI、不做域名前置、不承诺绕过 Cloudflare 的限制或封禁。请遵守 Cloudflare、源站提供商和当地法律的服务条款。
+- 当前 Worker 转发 WebSocket/TCP，不提供任意 UDP 隧道。长连接、CPU、带宽、消息大小和并发仍受 Cloudflare Workers 方案限制；高并发或 UDP 请使用适合的专用产品。
 
 ## 本地检查
 
@@ -117,11 +149,13 @@ npm run check
 npx wrangler dev
 ```
 
-本地 `wrangler dev` 只验证 Worker 路由和健康检查；要验证完整链路，必须让 `ORIGIN_HOST:ORIGIN_PORT` 上有可用的 WebSocket VLESS 入站。
+本地开发可在 `.dev.vars` 设置 `REQUIRE_PATH_TOKEN=false`，生产环境必须恢复为 `true` 并使用随机令牌。`wrangler dev` 只能验证路由和健康检查；完整链路需要可用的 VLESS + WebSocket 源站。
 
-## 文件说明
+## 文件
 
 - `src/index.js`：Worker 入口和双向 WebSocket 中继。
-- `wrangler.toml`：Cloudflare Workers 项目配置，不包含源站凭据。
+- `wrangler.toml`：不含源站凭据的部署配置，已启用 `keep_vars`。
 - `.dev.vars.example`：本地变量模板。
-- `test/worker.test.mjs`：不连接生产源站的源代码检查。
+- `examples/origin-map.example.json`：多地区域名到源站映射模板。
+- `examples/xboard-node.example.json`：XBoard 节点字段示例。
+- `test/worker.test.mjs`：不连接生产源站的检查。

@@ -1,0 +1,18 @@
+{
+  "japan.example.com": {
+    "host": "203.0.113.10",
+    "port": 39004,
+    "scheme": "wss",
+    "path": "/cf-vless",
+    "token": "REPLACE_WITH_A_RANDOM_JAPAN_TOKEN",
+    "max_connections": 64
+  },
+  "hongkong.example.com": {
+    "host": "2001:db8::20",
+    "port": 39004,
+    "scheme": "wss",
+    "path": "/cf-vless",
+    "token": "REPLACE_WITH_A_RANDOM_HONGKONG_TOKEN",
+    "max_connections": 64
+  }
+}
