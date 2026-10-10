@@ -9,10 +9,13 @@ assert.match(source, /origin unavailable/);
 assert.match(source, /ORIGIN_SCHEME/);
 assert.doesNotMatch(source, /originSocket\.accept/);
 assert.match(source, /binaryType = "arraybuffer"/);
-assert.match(source, /startsWith\("\["\)/);
+assert.match(source, /normalizeOriginHost/);
+assert.match(source, /isValidIPv6/);
 assert.match(source, /websocket upgrade required/);
 assert.match(source, /PATH_TOKEN/);
+assert.match(source, /REQUIRE_PATH_TOKEN/);
 assert.match(source, /MAX_CONNECTIONS/);
+assert.match(source, /upstream timeout/);
 assert.doesNotMatch(source, /fetcher\.connect/);
 
 console.log("worker source checks passed");

@@ -1,4 +1,6 @@
 name = "xboard-cloudflare-node"
+# Each independently deployed Worker must have a unique name in this account.
+# Change this value when importing the repository for another region/node.
 main = "src/index.js"
 compatibility_date = "2026-10-10"
 workers_dev = true
