@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "xboard-cloudflare-node",
+  "name": "xboard-cloudflare-node-legacy-archive",
   "main": "src/durable-index.js",
   "compatibility_date": "2026-10-10",
   "workers_dev": false,

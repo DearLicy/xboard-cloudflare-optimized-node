@@ -114,7 +114,8 @@ export default {
           onError: error => { runtime.lastError = error?.message || 'session_failed'; },
           onClose: async result => {
             runtime.sessions.delete(session);
-            const payload = statelessReportPayload(result, [...runtime.sessions]);
+            const peers = [...runtime.sessions].filter(peer => peer.route.nodeId === route.nodeId);
+            const payload = statelessReportPayload(result, peers);
             if (!payload) return;
             runtime.reportAttempts += 1;
             try {

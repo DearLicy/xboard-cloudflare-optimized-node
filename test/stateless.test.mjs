@@ -98,7 +98,7 @@ test('stateless health and admin endpoints work without a Durable Object binding
   assert.deepEqual(status.uncertain_batches, []);
 });
 
-test('stateless VLESS session authorizes per connection and reports bytes once on close', async () => {
+test('stateless VLESS sessions authorize per connection and report each node independently on close', async () => {
   const UUID = '00112233-4455-6677-8899-aabbccddeeff';
   const requests = [];
   const pairs = [];
@@ -132,25 +132,40 @@ test('stateless VLESS session authorizes per connection and reports bytes once o
     return socket;
   }
   const { namespace: { default: worker }, context } = await loadModule({ fetcher, pairFactory: Pair, connector: connect });
-  const ctx = { waitUntil(promise) { this.wait = promise; } };
-  const response = await worker.fetch(new Request(`https://asia.example.com/cf-vless/${ENV.PATH_TOKEN}`, {
-    headers: { Upgrade: 'websocket', 'CF-Connecting-IP': '203.0.113.8' },
-  }), ENV, ctx);
-  assert.equal(response.status, 101);
-  assert.equal(requests.filter(item => item.parsed.pathname.endsWith('/user')).length, 1);
+  const env = { ...ENV, REGION_MAP: JSON.stringify({
+    'asia.example.com': { node_id: 4 },
+    'global.example.com': { node_id: 5 },
+  }) };
+  const waits = [];
+  const ctx = { waitUntil(promise) { waits.push(promise); } };
   const bytes = context.Uint8Array.from([
     0, ...UUID.replace(/-/g, '').match(/../g).map(value => parseInt(value, 16)),
     0, 1, 1, 187, 2, 11, ...new TextEncoder().encode('example.com'), 1, 2, 3,
   ]);
-  const server = pairs[0][1];
-  server.emit('message', bytes);
-  await new Promise(resolve => setTimeout(resolve, 20));
-  assert.equal(sockets.length, 1);
-  server.emit('close');
-  await ctx.wait;
+  for (const host of ['asia.example.com', 'global.example.com']) {
+    const response = await worker.fetch(new Request(`https://${host}/cf-vless/${ENV.PATH_TOKEN}`, {
+      headers: { Upgrade: 'websocket', 'CF-Connecting-IP': '203.0.113.8' },
+    }), env, ctx);
+    assert.equal(response.status, 101);
+    pairs.at(-1)[1].emit('message', bytes);
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.equal(requests.filter(item => item.parsed.pathname.endsWith('/user')).length, 2);
+  assert.equal(sockets.length, 2);
+  pairs[0][1].emit('close');
+  await waits[0];
   const reports = requests.filter(item => item.parsed.pathname.endsWith('/report'));
   assert.equal(reports.length, 1);
-  assert.deepEqual(JSON.parse(reports[0].options.body).traffic, { 7: [3, 0] });
+  const report = JSON.parse(reports[0].options.body);
+  assert.equal(report.node_id, 4);
+  assert.deepEqual(report.traffic, { 7: [3, 0] });
+  assert.deepEqual(report.online, { 7: 0 }, 'connections to other nodes must not count as online here');
+  assert.deepEqual(report.alive, {});
+  pairs[1][1].emit('close');
+  await waits[1];
+  const allReports = requests.filter(item => item.parsed.pathname.endsWith('/report'));
+  assert.equal(allReports.length, 2);
+  assert.equal(JSON.parse(allReports[1].options.body).node_id, 5);
 });
 
 test('stateless config has no Durable Object, migration, or trigger declarations', async () => {
